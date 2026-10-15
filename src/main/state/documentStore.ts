@@ -10,8 +10,17 @@ export interface DocumentStoreState {
   doc: Node;
   dirty: boolean;
   mode: EditorMode;
+  sessionKey: string;
+  sessionGeneration: number;
   setDocument(doc: Node, dirty?: boolean): void;
   setMode(mode: EditorMode): void;
+  replaceDocument(replacement: {
+    doc: Node;
+    filePath: string | null;
+    fileName: string;
+    dirty?: boolean;
+  }): void;
+  saveAs(path: string, name: string): void;
   setFile(path: string | null, name: string): void;
   markSaved(): void;
 }
@@ -24,8 +33,23 @@ export const useDocumentStore = create<DocumentStoreState>((set) => ({
   doc: initialDoc,
   dirty: false,
   mode: "wysiwyg",
+  sessionKey: "session-0",
+  sessionGeneration: 0,
   setDocument: (doc, dirty = true) => set({ doc, dirty }),
   setMode: (mode) => set({ mode }),
+  replaceDocument: ({ doc, filePath, fileName, dirty = false }) =>
+    set((state) => {
+      const sessionGeneration = state.sessionGeneration + 1;
+      return {
+        doc,
+        filePath,
+        fileName,
+        dirty,
+        sessionGeneration,
+        sessionKey: `session-${sessionGeneration}`,
+      };
+    }),
+  saveAs: (filePath, fileName) => set({ filePath, fileName }),
   setFile: (filePath, fileName) => set({ filePath, fileName }),
   markSaved: () => set({ dirty: false }),
 }));

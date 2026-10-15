@@ -4,9 +4,11 @@ import { outlineFromDoc } from "../editor/outline";
 export function OutlinePanel({
   doc,
   onJump,
+  activePos,
 }: {
   doc: Node;
   onJump(pos: number): void;
+  activePos?: number;
 }) {
   const items = outlineFromDoc(doc);
 
@@ -21,7 +23,10 @@ export function OutlinePanel({
           <button
             key={item.id}
             type="button"
-            className={`outline-item level-${item.level}`}
+            className={`outline-item level-${item.level}${
+              item.pos === activePos ? " active" : ""
+            }`}
+            aria-current={item.pos === activePos ? "true" : undefined}
             data-testid={`outline-${item.id}`}
             onClick={() => onJump(item.pos)}
           >

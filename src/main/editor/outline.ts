@@ -25,3 +25,17 @@ export function outlineFromDoc(doc: Node): OutlineItem[] {
 
   return items;
 }
+
+export function activeOutlinePosition(
+  items: OutlineItem[],
+  position: number,
+): number | undefined {
+  let activePosition: number | undefined;
+
+  for (const item of items) {
+    if (item.pos > position) break;
+    activePosition = item.pos;
+  }
+
+  return activePosition;
+}

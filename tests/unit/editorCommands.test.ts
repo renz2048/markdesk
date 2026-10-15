@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import { EditorState, TextSelection, Transaction } from "prosemirror-state";
 import { Node } from "prosemirror-model";
 import type { Command } from "prosemirror-commands";
+import type { Node } from "prosemirror-model";
 import { parseMarkdown } from "../../src/markdown/parser";
 import { markdownSchema } from "../../src/markdown/schema";
+import { createEditorPlugins } from "../../src/main/components/WysiwygEditor";
 import {
+  formattingKeymap,
   insertHorizontalRule,
+  normalizeLinkHref,
   setBlockquote,
   setCodeBlock,
   setHeading,
@@ -40,6 +44,72 @@ function firstChild(doc: Node) {
   return child as Node;
 }
 
+function stateWithTextRange(source: string, text: string): EditorState {
+  const doc = parseMarkdown(source);
+  let range: { from: number; to: number } | undefined;
+  doc.descendants((node, pos) => {
+    if (node.isText && node.textContent === text && !range) {
+      range = { from: pos, to: pos + node.nodeSize };
+    }
+    return true;
+  });
+  if (!range) throw new Error(`text fixture not found: ${text}`);
+  return EditorState.create({
+    schema: markdownSchema,
+    doc,
+    selection: TextSelection.create(doc, range.from, range.to),
+  });
+}
+
+function cursorInText(source: string, text: string): EditorState {
+  const doc = parseMarkdown(source);
+  let position: number | undefined;
+  doc.descendants((node, pos) => {
+    if (node.isText && node.textContent === text && position === undefined) {
+      position = pos + Math.floor(text.length / 2);
+    }
+    return true;
+  });
+  if (position === undefined) throw new Error(`text fixture not found: ${text}`);
+  return EditorState.create({
+    schema: markdownSchema,
+    doc,
+    selection: TextSelection.create(doc, position),
+  });
+}
+
+function stateForEntireDocumentText(source: string): EditorState {
+  const doc = parseMarkdown(source);
+  let from = Number.POSITIVE_INFINITY;
+  let to = Number.NEGATIVE_INFINITY;
+  doc.descendants((node, pos) => {
+    if (node.isText) {
+      from = Math.min(from, pos);
+      to = Math.max(to, pos + node.nodeSize);
+    }
+    return true;
+  });
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    throw new Error("text fixture has no text nodes");
+  }
+  return EditorState.create({
+    schema: markdownSchema,
+    doc,
+    selection: TextSelection.create(doc, from, to),
+  });
+}
+
+function linkHrefs(doc: Node): (string | undefined)[] {
+  const hrefs: (string | undefined)[] = [];
+  doc.descendants((node) => {
+    if (node.isText) {
+      hrefs.push(node.marks.find((mark) => mark.type.name === "link")?.attrs.href);
+    }
+    return true;
+  });
+  return hrefs;
+}
+
 describe("editor commands", () => {
   it("changes the current block to a heading", () => {
     const next = applyCommand(setHeading(2), stateFor("Paragraph"));
@@ -64,6 +134,26 @@ describe("editor commands", () => {
   it("rejects invalid heading levels and empty links", () => {
     expect(() => setHeading(0)).toThrow(RangeError);
     expect(() => setLink("")).toThrow("Link href cannot be empty");
+  });
+
+  it("binds explicit formatting shortcuts and installs them before base keys", () => {
+    expect(Object.keys(formattingKeymap)).toEqual([
+      "Mod-b",
+      "Mod-i",
+      "Mod-e",
+      "Mod-Shift-x",
+      "Mod-Shift-8",
+      "Mod-Shift-9",
+    ]);
+    expect(createEditorPlugins()).toHaveLength(6);
+
+    const bold = applyCommand(
+      formattingKeymap["Mod-b"],
+      stateFor("Important", true),
+    );
+    expect(
+      firstChild(bold.doc).firstChild?.marks.map((mark) => mark.type.name),
+    ).toContain("strong");
   });
 
   it("wraps blocks in list types", () => {
@@ -92,8 +182,80 @@ describe("editor commands", () => {
     ).toEqual(["https://example.com/docs"]);
   });
 
+  it("replaces an existing link while preserving unrelated marks", () => {
+    const source = "[**bold link**](https://old.example/docs)";
+    const next = applyCommand(
+      setLink("https://new.example/latest"),
+      stateWithTextRange(source, "bold link"),
+    );
+    const text = firstChild(next.doc).firstChild;
+    expect(text?.marks.map((mark) => mark.type.name)).toEqual(
+      expect.arrayContaining(["strong", "link"]),
+    );
+    expect(text?.marks.find((mark) => mark.type.name === "link")?.attrs.href).toBe(
+      "https://new.example/latest",
+    );
+  });
+
+  it("sets one href over multiple ranges and plain text in a selection", () => {
+    const source =
+      "[First](https://one.example) middle [Second](https://two.example)";
+    const doc = parseMarkdown(source);
+    const next = applyCommand(
+      setLink("https://shared.example"),
+      stateForEntireDocumentText(source),
+    );
+    expect(linkHrefs(next.doc)).toEqual([
+      "https://shared.example",
+      "https://shared.example",
+      "https://shared.example",
+    ]);
+  });
+
+  it("updates and extends an existing link from an empty cursor", () => {
+    const next = applyCommand(
+      setLink("https://updated.example"),
+      cursorInText("[Linked](https://old.example)", "Linked"),
+    );
+    expect(linkHrefs(next.doc)).toEqual(["https://updated.example"]);
+    expect(
+      next.storedMarks?.map((mark) => mark.type.name),
+    ).toContain("link");
+  });
+
+  it("stores a new link mark for typing from an empty cursor", () => {
+    const next = applyCommand(
+      setLink("https://typed.example"),
+      stateFor("Paragraph"),
+    );
+    expect(next.storedMarks?.map((mark) => mark.type.name)).toContain("link");
+  });
+
   it("inserts a horizontal rule", () => {
     const next = applyCommand(insertHorizontalRule(), stateFor("Paragraph"));
     expect(next.doc.firstChild?.type.name).toBe("horizontal_rule");
+  });
+
+  it("normalizes safe URLs and rejects unsafe or malformed URLs", () => {
+    expect(normalizeLinkHref("  HTTPS://Example.com/path?x=1  ")).toBe(
+      "https://example.com/path?x=1",
+    );
+    expect(normalizeLinkHref("docs/page.md")).toBe("docs/page.md");
+    expect(normalizeLinkHref("  ./docs/page.md  ")).toBe("docs/page.md");
+    expect(normalizeLinkHref("#section")).toBe("#section");
+    expect(normalizeLinkHref("mailto:user@example.com")).toBe(
+      "mailto:user@example.com",
+    );
+
+    for (const unsafe of [
+      "javascript:alert(1)",
+      "data:text/html;base64,PHNjcmlwdD4=",
+      "vbscript:msgbox(1)",
+      "https://example.com/\u0000",
+      "https://[malformed",
+      "http://",
+    ]) {
+      expect(() => normalizeLinkHref(unsafe)).toThrow(/unsafe or malformed/i);
+    }
   });
 });

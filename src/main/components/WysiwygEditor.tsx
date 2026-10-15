@@ -8,7 +8,8 @@ import type { Node } from "prosemirror-model";
 import { EditorState, Plugin } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { markdownSchema } from "../../markdown/schema";
-import { SetEditorViewContext } from "./Toolbar";
+import { formattingKeymap } from "../editor/commands";
+import { SetEditorSelectionContext, SetEditorViewContext } from "./Toolbar";
 
 interface Props {
   initialDoc: Node;
@@ -20,6 +21,7 @@ export function createEditorPlugins(): Plugin[] {
   return [
     history(),
     keymap(historyKeymap),
+    keymap(formattingKeymap),
     keymap(baseKeymap),
     dropCursor(),
     gapCursor(),
@@ -29,6 +31,7 @@ export function createEditorPlugins(): Plugin[] {
 export function WysiwygEditor({ initialDoc, sessionKey, onChange }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const onChangeRef = useRef(onChange);
+  const setEditorSelection = useContext(SetEditorSelectionContext);
   const setEditorView = useContext(SetEditorViewContext);
 
   useEffect(() => {
@@ -55,6 +58,9 @@ export function WysiwygEditor({ initialDoc, sessionKey, onChange }: Props) {
         const nextState = view.state.apply(transaction);
         view.updateState(nextState);
         if (transaction.docChanged) onChangeRef.current(nextState.doc);
+        if (transaction.selectionSet || transaction.docChanged) {
+          setEditorSelection?.(nextState.selection.from);
+        }
       },
     });
 
@@ -66,7 +72,7 @@ export function WysiwygEditor({ initialDoc, sessionKey, onChange }: Props) {
       );
       view.destroy();
     };
-  }, [sessionKey, setEditorView]);
+  }, [sessionKey, setEditorSelection, setEditorView]);
 
   return (
     <div
