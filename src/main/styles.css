@@ -150,6 +150,126 @@ body {
   min-height: 0;
 }
 
+.welcome-view {
+  flex: 1;
+  overflow: auto;
+  padding: 40px clamp(20px, 7vw, 96px);
+  background: var(--editor-background);
+}
+
+.welcome-card {
+  max-width: 720px;
+  margin: auto;
+  padding: 32px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.welcome-card h1 {
+  margin: 0 0 8px;
+  font-size: 1.65rem;
+}
+
+.welcome-card > p {
+  margin: 0 0 20px;
+  color: var(--muted-foreground);
+}
+
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recent-files {
+  margin-top: 30px;
+}
+
+.recent-files-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recent-files-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.recent-empty {
+  margin: 14px 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.88rem;
+}
+
+.recent-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recent-file-item {
+  min-width: 0;
+}
+
+.recent-file-button {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recent-file-button:hover:not(:disabled),
+.recent-file-button:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.recent-file-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.recent-file-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.recent-file-name {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-file-path {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-file-missing {
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
 .mode-error {
   margin: 12px clamp(20px, 7vw, 96px) 0;
   color: var(--danger);
@@ -540,6 +660,70 @@ body {
   min-width: 42px;
 }
 
+.dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 45%);
+}
+
+.close-protection-dialog {
+  width: min(420px, 100%);
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 20px 45px rgb(0 0 0 / 22%);
+}
+
+.close-protection-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+}
+
+.close-protection-dialog p {
+  margin: 0 0 20px;
+  color: var(--muted-foreground);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dialog-actions button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+.dialog-actions .primary-dialog-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.dialog-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dialog-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 @media (max-width: 720px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
@@ -562,5 +746,9 @@ body {
   .view-actions,
   .file-actions {
     flex-wrap: wrap;
+  }
+
+  .recent-file-button {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

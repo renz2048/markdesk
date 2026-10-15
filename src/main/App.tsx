@@ -36,6 +36,7 @@ import type {
   FileWriteResult,
   MenuCommand,
   NewlinePreference,
+  RecentFileStatus,
 } from "../shared/types";
 
 const modeLabels = {
@@ -45,6 +46,11 @@ const modeLabels = {
 } as const;
 
 const modes = Object.keys(modeLabels) as EditorMode[];
+type PendingFileAction =
+  | { type: "new" }
+  | { type: "open"; path?: string }
+  | { type: "close" };
+
 const themeLabels: Record<ThemePreference, string> = {
   light: "浅色",
   dark: "深色",
@@ -67,6 +73,7 @@ function fileNameFromPath(path: string): string {
 
 export default function App() {
   const doc = useDocumentStore((state) => state.doc);
+  const filePath = useDocumentStore((state) => state.filePath);
   const fileName = useDocumentStore((state) => state.fileName);
   const dirty = useDocumentStore((state) => state.dirty);
   const mode = useDocumentStore((state) => state.mode);
@@ -85,6 +92,7 @@ export default function App() {
     (state) => state.setThemePreference,
   );
   const lifecycleRef = useRef(new FileLifecycleController());
+  const pendingActionRef = useRef<PendingFileAction | null>(null);
   const api = typeof window === "undefined" ? undefined : window.markdesk;
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [selectionPosition, setSelectionPosition] = useState(0);
@@ -97,6 +105,9 @@ export default function App() {
   const [fileActionError, setFileActionError] = useState<
     ReturnType<typeof toFileActionError> | null
   >(null);
+  const [recentFiles, setRecentFiles] = useState<RecentFileStatus[]>([]);
+  const [pendingFileAction, setPendingFileAction] =
+    useState<PendingFileAction | null>(null);
 
   useEffect(() => {
     setSelectionPosition(0);
@@ -153,8 +164,9 @@ export default function App() {
     [editorView],
   );
 
-  const newDocument = useCallback(() => {
-    if (lifecycleRef.current.beginOperation() === null) return;
+  const createUntitledDocument = useCallback((): boolean => {
+    const revision = lifecycleRef.current.beginOperation();
+    if (revision === null) return false;
 
     setFileBusy(true);
     setFileActionError(null);
@@ -167,30 +179,34 @@ export default function App() {
       });
       setFileFingerprint(null);
       setNewlinePreference("lf");
+      return lifecycleRef.current.isCurrent(revision);
     } finally {
       lifecycleRef.current.endOperation();
       setFileBusy(false);
     }
   }, []);
 
-  const openDocument = useCallback(async () => {
-    if (lifecycleRef.current.beginOperation() === null) return;
+  const openDocument = useCallback(async (path?: string): Promise<boolean> => {
+    const revision = lifecycleRef.current.beginOperation();
+    if (revision === null) return false;
 
     setFileBusy(true);
     setFileActionError(null);
     try {
-      const path = await api?.chooseMarkdownFile();
-      if (!path) return;
+      if (!api) return false;
+      const selectedPath = path ?? (await api.chooseMarkdownFile());
+      if (!selectedPath) return false;
 
-      const file = await api?.readFile(path);
-      if (!file) return;
+      const file = path
+        ? await api.readRecentFile(path)
+        : await api.readFile(selectedPath);
 
       let doc: ReturnType<typeof parseMarkdown>;
       try {
         doc = parseMarkdown(file.content);
       } catch (error) {
         setFileActionError(toFileActionError(error, "parse"));
-        return;
+        return false;
       }
       useDocumentStore.getState().replaceDocument({
         doc,
@@ -204,8 +220,10 @@ export default function App() {
         size: file.size,
       });
       setNewlinePreference(file.newline);
+      return lifecycleRef.current.isCurrent(revision);
     } catch (error) {
       setFileActionError(toFileActionError(error));
+      return false;
     } finally {
       lifecycleRef.current.endOperation();
       setFileBusy(false);
@@ -217,7 +235,7 @@ export default function App() {
       path: string,
       expected: FileFingerprint | undefined,
       revision: number,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       const state = useDocumentStore.getState();
       let source: string;
       try {
@@ -227,7 +245,7 @@ export default function App() {
             : serializeMarkdown(state.doc);
       } catch (error) {
         setFileActionError(toFileActionError(error, "serialize"));
-        return;
+        return false;
       }
 
       const content = normalizeForSave(source, newlinePreference);
@@ -236,13 +254,14 @@ export default function App() {
         result = await api?.writeFile(path, content, expected);
       } catch (error) {
         setFileActionError(toFileActionError(error));
-        return;
+        return false;
       }
-      if (!result) return;
+      if (!result) return false;
 
-      state.saveAs(result.path, fileNameFromPath(result.path));
+      const latestState = useDocumentStore.getState();
+      latestState.saveAs(result.path, fileNameFromPath(result.path));
       if (lifecycleRef.current.isCurrent(revision)) {
-        state.markSaved();
+        latestState.markSaved();
       }
       setFileFingerprint({
         hash: result.hash,
@@ -252,36 +271,38 @@ export default function App() {
       setNewlinePreference((current) =>
         content.includes("\r\n") ? "crlf" : current,
       );
+      return lifecycleRef.current.isCurrent(revision);
     },
     [api, newlinePreference],
   );
 
-  const saveDocument = useCallback(async () => {
+  const saveDocument = useCallback(async (): Promise<boolean> => {
     const revision = lifecycleRef.current.beginOperation();
-    if (revision === null) return;
+    if (revision === null) return false;
 
     setFileBusy(true);
     setFileActionError(null);
     try {
       const state = useDocumentStore.getState();
+      if (!api) return false;
       if (!state.filePath) {
-        const path = await api?.chooseSaveLocation(state.fileName);
-        if (!path) return;
-        await persistCurrentDocument(
+        const path = await api.chooseSaveLocation(state.fileName);
+        if (!path) return false;
+        return await persistCurrentDocument(
           path,
           fileFingerprint ?? undefined,
           revision,
         );
-        return;
       }
 
-      await persistCurrentDocument(
+      return await persistCurrentDocument(
         state.filePath,
         fileFingerprint ?? undefined,
         revision,
       );
     } catch (error) {
       setFileActionError(toFileActionError(error));
+      return false;
     } finally {
       lifecycleRef.current.endOperation();
       setFileBusy(false);
@@ -304,35 +325,84 @@ export default function App() {
     [setSourceText],
   );
 
-  const saveDocumentAs = useCallback(async () => {
+  const saveDocumentAs = useCallback(async (): Promise<boolean> => {
     const revision = lifecycleRef.current.beginOperation();
-    if (revision === null) return;
+    if (revision === null) return false;
 
     setFileBusy(true);
     setFileActionError(null);
     try {
       const state = useDocumentStore.getState();
-      const path = await api?.chooseSaveLocation(state.fileName);
-      if (!path) return;
+      if (!api) return false;
+      const path = await api.chooseSaveLocation(state.fileName);
+      if (!path) return false;
 
-      await persistCurrentDocument(
+      return await persistCurrentDocument(
         path,
         fileFingerprint ?? undefined,
         revision,
       );
     } catch (error) {
       setFileActionError(toFileActionError(error));
+      return false;
     } finally {
       lifecycleRef.current.endOperation();
       setFileBusy(false);
     }
   }, [api, fileFingerprint, persistCurrentDocument]);
 
+  const finishPendingFileAction = useCallback(
+    async (action: PendingFileAction): Promise<void> => {
+      if (pendingActionRef.current !== action) return;
+      pendingActionRef.current = null;
+      setPendingFileAction(null);
+
+      if (action.type === "close") {
+        await api?.requestClose();
+        return;
+      }
+      if (action.type === "new") {
+        createUntitledDocument();
+        return;
+      }
+      await openDocument(action.path);
+    },
+    [api, createUntitledDocument, openDocument],
+  );
+
+  const requestFileAction = useCallback(
+    (action: PendingFileAction): void => {
+      if (lifecycleRef.current.busy || pendingActionRef.current) return;
+      if (useDocumentStore.getState().dirty) {
+        pendingActionRef.current = action;
+        setPendingFileAction(action);
+        return;
+      }
+      void finishPendingFileAction(action);
+    },
+    [finishPendingFileAction],
+  );
+
+  const cancelPendingFileAction = useCallback((): void => {
+    pendingActionRef.current = null;
+    setPendingFileAction(null);
+  }, []);
+
+  const saveAndContinue = useCallback(async (): Promise<void> => {
+    const action = pendingActionRef.current;
+    if (!action || lifecycleRef.current.busy) return;
+
+    const saved = await saveDocument();
+    if (saved && pendingActionRef.current === action) {
+      await finishPendingFileAction(action);
+    }
+  }, [finishPendingFileAction, saveDocument]);
+
   const handleMenuCommand = useCallback(
     (command: MenuCommand) => {
-      if (lifecycleRef.current.busy) return;
-      if (command === "new") newDocument();
-      else if (command === "open") void openDocument();
+      if (lifecycleRef.current.busy || pendingActionRef.current) return;
+      if (command === "new") requestFileAction({ type: "new" });
+      else if (command === "open") requestFileAction({ type: "open" });
       else if (command === "save") void saveDocument();
       else if (command === "save-as") void saveDocumentAs();
       else if (command === "toggle-source") transitionMode("source");
@@ -340,8 +410,8 @@ export default function App() {
       else if (command === "toggle-wysiwyg") transitionMode("wysiwyg");
     },
     [
-      newDocument,
       openDocument,
+      requestFileAction,
       saveDocument,
       saveDocumentAs,
       transitionMode,
@@ -355,6 +425,50 @@ export default function App() {
 
   useEffect(() => {
     if (!api) return;
+    let cancelled = false;
+
+    void api.getRecentFiles().then((files) => {
+      if (!cancelled) setRecentFiles(files);
+    }).catch((error) => {
+      if (!cancelled) setFileActionError(toFileActionError(error));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
+    return api.onRecentFilesChanged(setRecentFiles);
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
+    return api.onOpenRecentFile((event) => {
+      requestFileAction({ type: "open", path: event.path });
+    });
+  }, [api, requestFileAction]);
+
+  useEffect(() => {
+    if (!api) return;
+    return api.onCloseRequested(() => {
+      const currentAction = pendingActionRef.current;
+      if (currentAction?.type === "close") return;
+      const action: PendingFileAction = { type: "close" };
+      pendingActionRef.current = action;
+      setPendingFileAction(action);
+    });
+  }, [api]);
+
+  useEffect(() => {
+    if (!pendingFileAction || fileBusy) return;
+    if (!useDocumentStore.getState().dirty) {
+      void finishPendingFileAction(pendingFileAction);
+    }
+  }, [pendingFileAction, fileBusy, finishPendingFileAction]);
+
+  useEffect(() => {
+    if (!api) return;
     return api.onFileChanged((event) => {
       if (useDocumentStore.getState().filePath === event.path) {
         setFileActionError({
@@ -364,6 +478,17 @@ export default function App() {
       }
     });
   }, [api]);
+
+  const clearRecentFiles = useCallback(async (): Promise<void> => {
+    try {
+      await api?.clearRecentFiles();
+      setRecentFiles([]);
+    } catch (error) {
+      setFileActionError(toFileActionError(error));
+    }
+  }, [api]);
+
+  const showWelcome = filePath === null && !dirty;
 
   return (
     <main className="app-shell" data-testid="app-shell">
@@ -376,11 +501,12 @@ export default function App() {
               themePreference={themePreference}
               onModeChange={transitionMode}
               onThemeChange={setThemePreference}
-              onNewDocument={newDocument}
-              onOpenDocument={openDocument}
+              onNewDocument={() => requestFileAction({ type: "new" })}
+              onOpenDocument={() => requestFileAction({ type: "open" })}
               onSaveDocument={saveDocument}
               onSaveDocumentAs={saveDocumentAs}
               fileBusy={fileBusy}
+              actionPending={pendingFileAction !== null}
             />
             <div className="workspace" data-testid="workspace">
               <OutlinePanel
@@ -410,7 +536,17 @@ export default function App() {
                     {fileActionError.message}
                   </p>
                 ) : null}
-                {mode === "wysiwyg" ? (
+                {showWelcome ? (
+                  <WelcomeView
+                    recentFiles={recentFiles}
+                    fileBusy={fileBusy || pendingFileAction !== null}
+                    onNewDocument={() => requestFileAction({ type: "new" })}
+                    onOpenDocument={() => requestFileAction({ type: "open" })}
+                    onOpenRecentFile={(path) =>
+                      requestFileAction({ type: "open", path })}
+                    onClearRecentFiles={clearRecentFiles}
+                  />
+                ) : mode === "wysiwyg" ? (
                   <WysiwygEditor
                     initialDoc={doc}
                     sessionKey={sessionKey}
@@ -432,6 +568,15 @@ export default function App() {
       </EditorViewContext.Provider>
 
       <StatusBar fileName={fileName} dirty={dirty} mode={mode} />
+      {pendingFileAction && dirty ? (
+        <CloseProtectionDialog
+          busy={fileBusy}
+          fileName={fileName}
+          onSave={() => void saveAndContinue()}
+          onDiscard={() => void finishPendingFileAction(pendingFileAction)}
+          onCancel={cancelPendingFileAction}
+        />
+      ) : null}
     </main>
   );
 }
@@ -446,6 +591,7 @@ function ViewBar({
   onSaveDocument,
   onSaveDocumentAs,
   fileBusy,
+  actionPending,
 }: {
   mode: EditorMode;
   themePreference: ThemePreference;
@@ -456,6 +602,7 @@ function ViewBar({
   onSaveDocument(): void | Promise<void>;
   onSaveDocumentAs(): void | Promise<void>;
   fileBusy: boolean;
+  actionPending: boolean;
 }) {
   return (
     <div className="view-bar" data-testid="view-bar">
@@ -485,7 +632,7 @@ function ViewBar({
             type="button"
             className="mode-button"
             data-testid="file-new"
-            disabled={fileBusy}
+            disabled={fileBusy || actionPending}
             onClick={onNewDocument}
           >
             新建
@@ -494,7 +641,7 @@ function ViewBar({
             type="button"
             className="mode-button"
             data-testid="file-open"
-            disabled={fileBusy}
+            disabled={fileBusy || actionPending}
             onClick={() => void onOpenDocument()}
           >
             打开
@@ -503,7 +650,7 @@ function ViewBar({
             type="button"
             className="mode-button"
             data-testid="file-save"
-            disabled={fileBusy}
+            disabled={fileBusy || actionPending}
             onClick={() => void onSaveDocument()}
           >
             保存
@@ -512,7 +659,7 @@ function ViewBar({
             type="button"
             className="mode-button"
             data-testid="file-save-as"
-            disabled={fileBusy}
+            disabled={fileBusy || actionPending}
             onClick={() => void onSaveDocumentAs()}
           >
             另存为
@@ -540,6 +687,178 @@ function ViewBar({
           ))}
         </select>
       </label>
+    </div>
+  );
+}
+
+function WelcomeView({
+  recentFiles,
+  fileBusy,
+  onNewDocument,
+  onOpenDocument,
+  onOpenRecentFile,
+  onClearRecentFiles,
+}: {
+  recentFiles: RecentFileStatus[];
+  fileBusy: boolean;
+  onNewDocument(): void;
+  onOpenDocument(): void;
+  onOpenRecentFile(path: string): void;
+  onClearRecentFiles(): void | Promise<void>;
+}) {
+  return (
+    <section
+      className="welcome-view"
+      aria-labelledby="welcome-title"
+      data-testid="welcome-view"
+    >
+      <div className="welcome-card">
+        <h1 id="welcome-title">欢迎使用 MarkDesk</h1>
+        <p>创建一个新文档，或从最近的 Markdown 文件继续工作。</p>
+        <div className="welcome-actions" role="group" aria-label="开始使用">
+          <button
+            type="button"
+            className="mode-button"
+            data-testid="welcome-new"
+            disabled={fileBusy}
+            onClick={onNewDocument}
+          >
+            新建文档
+          </button>
+          <button
+            type="button"
+            className="mode-button"
+            data-testid="welcome-open"
+            disabled={fileBusy}
+            onClick={onOpenDocument}
+          >
+            打开文件
+          </button>
+        </div>
+
+        <section className="recent-files" aria-labelledby="recent-files-title">
+          <div className="recent-files-header">
+            <h2 id="recent-files-title">最近打开</h2>
+            <button
+              type="button"
+              className="mode-button"
+              data-testid="clear-recent-files"
+              disabled={fileBusy || recentFiles.length === 0}
+              onClick={() => void onClearRecentFiles()}
+            >
+              清除最近文件
+            </button>
+          </div>
+          {recentFiles.length === 0 ? (
+            <p className="recent-empty" data-testid="recent-files-empty">
+              暂无最近文件
+            </p>
+          ) : (
+            <ul className="recent-files-list" data-testid="recent-files-list">
+              {recentFiles.map((file) => (
+                <li
+                  key={file.path}
+                  className="recent-file-item"
+                  data-testid="recent-file-item"
+                  data-missing={file.exists ? "false" : "true"}
+                >
+                  <button
+                    type="button"
+                    className="recent-file-button"
+                    data-testid="open-recent-file"
+                    data-path={file.path}
+                    disabled={fileBusy || !file.exists}
+                    onClick={() => onOpenRecentFile(file.path)}
+                  >
+                    <span className="recent-file-name">{file.name}</span>
+                    <span className="recent-file-path">{file.path}</span>
+                    {!file.exists ? (
+                      <span
+                        className="recent-file-missing"
+                        data-testid="recent-file-missing"
+                      >
+                        文件不存在
+                      </span>
+                    ) : null}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function CloseProtectionDialog({
+  busy,
+  fileName,
+  onSave,
+  onDiscard,
+  onCancel,
+}: {
+  busy: boolean;
+  fileName: string;
+  onSave(): void;
+  onDiscard(): void;
+  onCancel(): void;
+}) {
+  return (
+    <div
+      className="dialog-backdrop"
+      data-testid="close-protection-backdrop"
+    >
+      <section
+        className="close-protection-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="close-protection-title"
+        aria-describedby="close-protection-description"
+        data-testid="close-protection-dialog"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !busy) {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <h2 id="close-protection-title">未保存的更改</h2>
+        <p id="close-protection-description">
+          是否保存对“{fileName}”的更改？
+        </p>
+        <div
+          className="dialog-actions"
+          role="group"
+          aria-label="关闭保护操作"
+        >
+          <button
+            type="button"
+            className="primary-dialog-button"
+            data-testid="close-protection-save"
+            disabled={busy}
+            autoFocus
+            onClick={onSave}
+          >
+            保存并继续
+          </button>
+          <button
+            type="button"
+            data-testid="close-protection-discard"
+            disabled={busy}
+            onClick={onDiscard}
+          >
+            放弃更改
+          </button>
+          <button
+            type="button"
+            data-testid="close-protection-cancel"
+            onClick={onCancel}
+          >
+            取消
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

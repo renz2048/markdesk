@@ -1,13 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 import {
   markdeskChannels,
+  type FileChangedEvent,
   type IpcResult,
   type MenuCommand,
-  type FileChangedEvent,
   type FileFingerprint,
   type FileReadResult,
   type FileWriteResult,
   type MarkDeskRendererApi,
+  type OpenRecentFileEvent,
+  type RecentFileStatus,
 } from "../shared/types";
 
 async function invokeResult<TValue>(
@@ -46,6 +48,14 @@ const rendererApi: MarkDeskRendererApi = {
     expected?: FileFingerprint,
   ): Promise<FileWriteResult> =>
     invokeResult(markdeskChannels.writeFile, path, content, expected),
+  getRecentFiles: (): Promise<RecentFileStatus[]> =>
+    invokeResult(markdeskChannels.getRecentFiles),
+  readRecentFile: (path: string): Promise<FileReadResult> =>
+    invokeResult(markdeskChannels.readRecentFile, path),
+  clearRecentFiles: (): Promise<void> =>
+    invokeResult(markdeskChannels.clearRecentFiles),
+  requestClose: (): Promise<void> =>
+    invokeResult(markdeskChannels.requestClose),
   onMenuCommand: (listener: (command: MenuCommand) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
@@ -68,6 +78,57 @@ const rendererApi: MarkDeskRendererApi = {
     ipcRenderer.on(markdeskChannels.fileChanged, handler);
     return () => {
       ipcRenderer.removeListener(markdeskChannels.fileChanged, handler);
+    };
+  },
+  onOpenRecentFile: (listener: (event: OpenRecentFileEvent) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      event: unknown,
+    ) => {
+      if (
+        typeof event === "object" && event !== null &&
+        typeof (event as OpenRecentFileEvent).path === "string"
+      ) {
+        listener((event as OpenRecentFileEvent));
+      }
+    };
+    ipcRenderer.on(markdeskChannels.openRecentFile, handler);
+    return () => {
+      ipcRenderer.removeListener(markdeskChannels.openRecentFile, handler);
+    };
+  },
+  onRecentFilesChanged: (
+    listener: (files: RecentFileStatus[]) => void,
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      files: unknown,
+    ) => {
+      if (
+        Array.isArray(files) &&
+        files.every((file) =>
+          typeof file === "object" && file !== null &&
+          typeof (file as RecentFileStatus).path === "string" &&
+          typeof (file as RecentFileStatus).name === "string" &&
+          typeof (file as RecentFileStatus).lastOpenedAt === "number" &&
+          typeof (file as RecentFileStatus).exists === "boolean"
+        )
+      ) {
+        listener(files as RecentFileStatus[]);
+      }
+    };
+    ipcRenderer.on(markdeskChannels.recentFilesChanged, handler);
+    return () => {
+      ipcRenderer.removeListener(markdeskChannels.recentFilesChanged, handler);
+    };
+  },
+  onCloseRequested: (listener: () => void) => {
+    const handler = () => {
+      listener();
+    };
+    ipcRenderer.on(markdeskChannels.closeRequested, handler);
+    return () => {
+      ipcRenderer.removeListener(markdeskChannels.closeRequested, handler);
     };
   },
 };

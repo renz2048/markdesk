@@ -3,7 +3,7 @@ import {
   dialog,
   ipcMain,
 } from "electron";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import {
   FileServiceError,
@@ -13,12 +13,19 @@ import {
   writeMarkdownFile,
 } from "./file-service";
 import {
+  clearRecentFiles,
+  loadRecentFiles,
+  upsertRecentFile,
+} from "./recent-files";
+import {
   markdeskChannels,
   type FileFingerprint,
   type FileReadResult,
   type FileWriteResult,
   type IpcResult,
   type MenuCommand,
+  type RecentFile,
+  type RecentFileStatus,
 } from "../shared/types";
 
 interface WebContentsLike {
@@ -31,6 +38,13 @@ interface WebContentsLike {
 interface BrowserWindowLike {
   webContents: WebContentsLike;
   once(event: "closed", listener: () => void): void;
+}
+
+interface CloseableWindowLike extends BrowserWindowLike {
+  on(event: "close", listener: (event: {
+    preventDefault(): void;
+  }) => void): void;
+  close(): void;
 }
 
 interface IpcMainLike {
@@ -73,6 +87,14 @@ export interface SecureFileIpcDependencies {
     content: string,
     expected?: FileFingerprint,
   ) => Promise<FileWriteResult>;
+  recentStoragePath?: string;
+  loadRecentFiles?: (storagePath: string) => Promise<RecentFile[]>;
+  upsertRecentFile?: (
+    storagePath: string,
+    path: string,
+  ) => Promise<RecentFile[]>;
+  clearRecentFiles?: (storagePath: string) => Promise<void>;
+  fileExists?: (path: string) => Promise<boolean>;
 }
 
 interface WindowFileGrants {
@@ -82,6 +104,12 @@ interface WindowFileGrants {
   writePaths: Set<string>;
   writeBaselines: Map<string, FileFingerprint>;
 }
+
+interface CloseRequest {
+  authorizeAndClose(): void;
+}
+
+type RecentFilesListener = (files: RecentFileStatus[]) => void;
 
 function success<TValue>(value: TValue): IpcResult<TValue> {
   return { ok: true, value };
@@ -130,6 +158,15 @@ async function defaultCanonicalize(path: string): Promise<string> {
   }
 }
 
+async function defaultFileExists(path: string): Promise<boolean> {
+  try {
+    const information = await stat(path);
+    return information.isFile();
+  } catch {
+    return false;
+  }
+}
+
 function defaultWindows(): BrowserWindowLike[] {
   return BrowserWindow.getAllWindows();
 }
@@ -159,6 +196,10 @@ function defaultSaveName(value: unknown): string {
 export interface SecureFileIpcController {
   register(): void;
   notifyFileChanged(path: string): Promise<void>;
+  protectWindowClose(window: CloseableWindowLike): void;
+  refreshRecentFiles(): Promise<RecentFileStatus[]>;
+  clearRecentFiles(): Promise<void>;
+  onRecentFilesChanged(listener: RecentFilesListener): void;
 }
 
 export function createSecureFileIpcController(
@@ -170,7 +211,15 @@ export function createSecureFileIpcController(
   const canonicalize = dependencies.canonicalize ?? defaultCanonicalize;
   const read = dependencies.readFile ?? readMarkdownFile;
   const write = dependencies.writeFile ?? writeMarkdownFile;
+  const recentStoragePath = dependencies.recentStoragePath;
+  const loadRecent = dependencies.loadRecentFiles ?? loadRecentFiles;
+  const upsertRecent = dependencies.upsertRecentFile ?? upsertRecentFile;
+  const clearRecent = dependencies.clearRecentFiles ?? clearRecentFiles;
+  const fileExists = dependencies.fileExists ?? defaultFileExists;
   const grantsBySender = new Map<number, WindowFileGrants>();
+  const closeRequests = new Map<number, CloseRequest>();
+  const recentFilesListeners = new Set<RecentFilesListener>();
+  let recentOperation: Promise<unknown> = Promise.resolve();
   let registered = false;
 
   function windowForSender(sender: WebContentsLike): BrowserWindowLike | null {
@@ -243,6 +292,84 @@ export function createSecureFileIpcController(
     }
   }
 
+  function requireRecentStorage(): string {
+    if (!recentStoragePath) {
+      throw new FileServiceError(
+        "invalid-argument",
+        "最近文件存储未配置。",
+      );
+    }
+    return recentStoragePath;
+  }
+
+  function queueRecentOperation<TValue>(
+    operation: () => Promise<TValue>,
+  ): Promise<TValue> {
+    const result = recentOperation.then(operation, operation);
+    recentOperation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  async function recentStatuses(
+    files: RecentFile[],
+  ): Promise<RecentFileStatus[]> {
+    return Promise.all(files.map(async (file) => ({
+      ...file,
+      exists: await fileExists(file.path),
+    })));
+  }
+
+  function broadcastRecentFiles(files: RecentFileStatus[]): void {
+    for (const listener of recentFilesListeners) listener(files);
+    for (const window of getWindows()) {
+      if (!window.webContents.isDestroyed?.()) {
+        window.webContents.send(markdeskChannels.recentFilesChanged, files);
+      }
+    }
+  }
+
+  async function loadRecentStatuses(): Promise<RecentFileStatus[]> {
+    return recentStatuses(
+      await loadRecent(requireRecentStorage()),
+    );
+  }
+
+  async function recordRecentFile(path: string): Promise<void> {
+    await queueRecentOperation(async () => {
+      const files = await upsertRecent(requireRecentStorage(), path);
+      broadcastRecentFiles(await recentStatuses(files));
+    });
+  }
+
+  async function recordRecentFileBestEffort(
+    path: string,
+  ): Promise<void> {
+    try {
+      await recordRecentFile(path);
+    } catch {
+      // Opening or saving the document must not fail solely because recent-file
+      // metadata could not be updated.
+    }
+  }
+
+  async function readGrantedFile(
+    grants: WindowFileGrants,
+    canonical: string,
+  ): Promise<FileReadResult> {
+    const file = await read(canonical);
+    grants.writePaths.add(canonical);
+    grants.writeBaselines.set(canonical, {
+      hash: file.hash,
+      mtimeMs: file.mtimeMs,
+      size: file.size,
+    });
+    await recordRecentFileBestEffort(canonical);
+    return file;
+  }
+
   function register(): void {
     if (registered) return;
     registered = true;
@@ -304,14 +431,7 @@ export function createSecureFileIpcController(
           const canonical = await canonicalMarkdownPath(path);
           requireReadGrant(grants, canonical);
 
-          const file = await read(canonical);
-          grants.writePaths.add(canonical);
-          grants.writeBaselines.set(canonical, {
-            hash: file.hash,
-            mtimeMs: file.mtimeMs,
-            size: file.size,
-          });
-          return file;
+          return readGrantedFile(grants, canonical);
         }),
     );
 
@@ -367,7 +487,80 @@ export function createSecureFileIpcController(
             mtimeMs: result.mtimeMs,
             size: result.size,
           });
+          await recordRecentFileBestEffort(canonical);
           return result;
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.getRecentFiles,
+      async (event): Promise<IpcResult<RecentFileStatus[]>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          return queueRecentOperation(loadRecentStatuses);
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.readRecentFile,
+      async (
+        event,
+        path: unknown,
+      ): Promise<IpcResult<FileReadResult>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const canonical = await canonicalMarkdownPath(path);
+          await queueRecentOperation(async () => {
+            const files = await loadRecent(requireRecentStorage());
+            if (!files.some((file) => file.path === canonical)) {
+              throw new FileServiceError(
+                "invalid-path",
+                "此文件不在最近打开列表中。",
+              );
+            }
+            if (!(await fileExists(canonical))) {
+              throw new FileServiceError(
+                "invalid-path",
+                "文件不存在。",
+              );
+            }
+          });
+          grants.readPaths.add(canonical);
+          try {
+            const file = await readGrantedFile(grants, canonical);
+            return file;
+          } catch (error) {
+            grants.readPaths.delete(canonical);
+            throw error;
+          }
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.clearRecentFiles,
+      async (event): Promise<IpcResult<void>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          await queueRecentOperation(async () => {
+            await clearRecent(requireRecentStorage());
+            broadcastRecentFiles([]);
+          });
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.requestClose,
+      async (event): Promise<IpcResult<void>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const request = closeRequests.get(grants.sender.id);
+          if (!request) {
+            throw new FileServiceError(
+              "invalid-argument",
+              "此窗口没有待处理的关闭请求。",
+            );
+          }
+          request.authorizeAndClose();
         }),
     );
   }
@@ -383,17 +576,55 @@ export function createSecureFileIpcController(
     }
   }
 
-  return { register, notifyFileChanged };
-}
+  function protectWindowClose(window: CloseableWindowLike): void {
+    let authorizedClose = false;
+    closeRequests.set(window.webContents.id, {
+      authorizeAndClose: () => {
+        if (window.webContents.isDestroyed?.()) return;
+        authorizedClose = true;
+        closeRequests.delete(window.webContents.id);
+        window.close();
+      },
+    });
+    window.on("close", (event) => {
+      if (authorizedClose || window.webContents.isDestroyed?.()) return;
+      event.preventDefault();
+      window.webContents.send(markdeskChannels.closeRequested, undefined);
+    });
+    window.once("closed", () => {
+      closeRequests.delete(window.webContents.id);
+      revoke(window.webContents.id);
+    });
+  }
 
-const productionController = createSecureFileIpcController();
+  async function refreshRecentFiles(): Promise<RecentFileStatus[]> {
+    const files = await queueRecentOperation(async () => {
+      const statuses = await loadRecentStatuses();
+      broadcastRecentFiles(statuses);
+      return statuses;
+    });
+    return files;
+  }
 
-export function registerSecureFileIpc(): void {
-  productionController.register();
-}
+  async function clearRecentFilesForApplication(): Promise<void> {
+    await queueRecentOperation(async () => {
+      await clearRecent(requireRecentStorage());
+      broadcastRecentFiles([]);
+    });
+  }
 
-export async function notifyFileChanged(path: string): Promise<void> {
-  await productionController.notifyFileChanged(path);
+  function onRecentFilesChanged(listener: RecentFilesListener): void {
+    recentFilesListeners.add(listener);
+  }
+
+  return {
+    register,
+    notifyFileChanged,
+    protectWindowClose,
+    refreshRecentFiles,
+    clearRecentFiles: clearRecentFilesForApplication,
+    onRecentFilesChanged,
+  };
 }
 
 const menuCommands = new Set<MenuCommand>([
@@ -416,4 +647,11 @@ export function sendMenuCommand(
   command: MenuCommand,
 ): void {
   window.webContents.send(markdeskChannels.menuCommand, command);
+}
+
+export function sendOpenRecentFile(
+  window: BrowserWindow,
+  path: string,
+): void {
+  window.webContents.send(markdeskChannels.openRecentFile, { path });
 }

@@ -22,6 +22,10 @@ export interface RecentFile {
   lastOpenedAt: number;
 }
 
+export interface RecentFileStatus extends RecentFile {
+  exists: boolean;
+}
+
 export type MenuCommand =
   | "new"
   | "open"
@@ -33,6 +37,10 @@ export type MenuCommand =
   | "toggle-wysiwyg";
 
 export interface FileChangedEvent {
+  path: string;
+}
+
+export interface OpenRecentFileEvent {
   path: string;
 }
 
@@ -61,8 +69,15 @@ export const markdeskChannels = {
   chooseSaveLocation: "markdesk:choose-save-location",
   readFile: "markdesk:read-file",
   writeFile: "markdesk:write-file",
+  getRecentFiles: "markdesk:get-recent-files",
+  readRecentFile: "markdesk:read-recent-file",
+  clearRecentFiles: "markdesk:clear-recent-files",
+  recentFilesChanged: "markdesk:recent-files-changed",
+  openRecentFile: "markdesk:open-recent-file",
   menuCommand: "markdesk:menu-command",
   fileChanged: "markdesk:file-changed",
+  closeRequested: "markdesk:close-requested",
+  requestClose: "markdesk:request-close",
 } as const;
 
 export interface MarkDeskRendererApi {
@@ -74,8 +89,19 @@ export interface MarkDeskRendererApi {
     content: string,
     expected?: FileFingerprint,
   ): Promise<FileWriteResult>;
+  getRecentFiles(): Promise<RecentFileStatus[]>;
+  readRecentFile(path: string): Promise<FileReadResult>;
+  clearRecentFiles(): Promise<void>;
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   onFileChanged(listener: (event: FileChangedEvent) => void): () => void;
+  onOpenRecentFile(
+    listener: (event: OpenRecentFileEvent) => void,
+  ): () => void;
+  onRecentFilesChanged(
+    listener: (files: RecentFileStatus[]) => void,
+  ): () => void;
+  onCloseRequested(listener: () => void): () => void;
+  requestClose(): Promise<void>;
 }
 
 declare global {

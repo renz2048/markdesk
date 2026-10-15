@@ -65,6 +65,42 @@ class FakeWindow {
   }
 }
 
+class CloseProtectedWindow extends FakeWindow {
+  closed = false;
+  private authorizedClose = false;
+  private closeListeners: Array<(event: {
+    preventDefault(): void;
+  }) => void> = [];
+
+  on(event: "close", listener: (event: {
+    preventDefault(): void;
+  }) => void): void {
+    if (event === "close") this.closeListeners.push(listener);
+  }
+
+  emitClose(): boolean {
+    let prevented = false;
+    for (const listener of this.closeListeners.splice(0)) {
+      listener({
+        preventDefault: () => {
+          prevented = true;
+        },
+      });
+    }
+    if (!prevented) this.closed = true;
+    return prevented;
+  }
+
+  forceClose(): void {
+    this.authorizedClose = true;
+    this.emitClose();
+  }
+
+  get canClose(): boolean {
+    return this.authorizedClose;
+  }
+}
+
 interface ControllerOptions {
   windows?: FakeWindow[];
   openPath?: string | null;
@@ -72,6 +108,12 @@ interface ControllerOptions {
   disk?: string;
   aliases?: Record<string, string>;
   writeGuard?: boolean;
+  fileExists?: (path: string) => Promise<boolean>;
+  recentFiles?: Array<{
+    path: string;
+    name: string;
+    lastOpenedAt: number;
+  }>;
 }
 
 function createController(options: ControllerOptions = {}) {
@@ -79,11 +121,13 @@ function createController(options: ControllerOptions = {}) {
   const windows = options.windows ?? [new FakeWindow(1)];
   const aliases = options.aliases ?? {};
   const disk = { content: options.disk ?? "# Open\n" };
+  const reads: string[] = [];
   const writes: Array<{
     path: string;
     content: string;
     expected?: { hash: string; mtimeMs: number; size: number };
   }> = [];
+  const recentFiles = [...(options.recentFiles ?? [])];
 
   const controller = createSecureFileIpcController({
     ipcMain,
@@ -99,7 +143,28 @@ function createController(options: ControllerOptions = {}) {
     },
     getWindows: () => windows,
     canonicalize: async (path: string) => aliases[path] ?? path,
+    recentStoragePath: "/state/recent-files.json",
+    loadRecentFiles: async () => recentFiles.map((file) => ({ ...file })),
+    upsertRecentFile: async (_storage, path) => {
+      const entry = {
+        path,
+        name: path.split("/").at(-1) ?? path,
+        lastOpenedAt: recentFiles.length + 1,
+      };
+      const nextFiles = [
+        entry,
+        ...recentFiles.filter((file) => file.path !== path),
+      ].slice(0, 10);
+      recentFiles.length = 0;
+      recentFiles.push(...nextFiles);
+      return nextFiles.map((file) => ({ ...file }));
+    },
+    clearRecentFiles: async () => {
+      recentFiles.length = 0;
+    },
+    fileExists: async () => true,
     readFile: async (path: string) => {
+      reads.push(path);
       const content = disk.content;
       return {
         path,
@@ -137,7 +202,7 @@ function createController(options: ControllerOptions = {}) {
   });
 
   controller.register();
-  return { controller, ipcMain, windows, disk, writes };
+  return { controller, ipcMain, windows, disk, writes, reads, recentFiles };
 }
 
 function error(result: unknown) {
@@ -160,6 +225,10 @@ describe("secure file IPC grants", () => {
       markdeskChannels.chooseSaveLocation,
       markdeskChannels.readFile,
       markdeskChannels.writeFile,
+      markdeskChannels.getRecentFiles,
+      markdeskChannels.readRecentFile,
+      markdeskChannels.clearRecentFiles,
+      markdeskChannels.requestClose,
     ]) {
       const result = await ipcMain.invoke(channel, event);
       expect(error(result)?.code).toBe("unexpected-error");
@@ -238,11 +307,180 @@ describe("secure file IPC grants", () => {
 
     expect(first.webContents.sent).toEqual([
       {
+        channel: markdeskChannels.recentFilesChanged,
+        payload: [{
+          path: "/canonical.md",
+          name: "canonical.md",
+          lastOpenedAt: 1,
+          exists: true,
+        }],
+      },
+      {
         channel: markdeskChannels.fileChanged,
         payload: { path: "/canonical.md" },
       },
     ]);
-    expect(second.webContents.sent).toEqual([]);
+    expect(second.webContents.sent).toEqual([
+      {
+        channel: markdeskChannels.recentFilesChanged,
+        payload: [{
+          path: "/canonical.md",
+          name: "canonical.md",
+          lastOpenedAt: 1,
+          exists: true,
+        }],
+      },
+    ]);
+  });
+
+  it("authorizes a persisted recent path only for the requesting window", async () => {
+    const first = new FakeWindow(1);
+    const second = new FakeWindow(2);
+    const { ipcMain, reads } = createController({
+      windows: [first, second],
+      aliases: { "/recent/alias.md": "/recent/actual.md" },
+      recentFiles: [{
+        path: "/recent/actual.md",
+        name: "actual.md",
+        lastOpenedAt: 20,
+      }],
+    });
+
+    const denied = await ipcMain.invoke(
+      markdeskChannels.readRecentFile,
+      { sender: first.webContents },
+      "/not-recent.md",
+    );
+    expect(error(denied)?.code).toBe("invalid-path");
+    expect(reads).toEqual([]);
+
+    const opened = await ipcMain.invoke(
+      markdeskChannels.readRecentFile,
+      { sender: first.webContents },
+      "/recent/alias.md",
+    );
+    expect(opened).toMatchObject({
+      ok: true,
+      value: { path: "/recent/actual.md" },
+    });
+
+    const secondWindow = await ipcMain.invoke(
+      markdeskChannels.readRecentFile,
+      { sender: second.webContents },
+      "/recent/actual.md",
+    );
+    expect(error(secondWindow)?.code).toBe("invalid-path");
+    expect(reads).toEqual(["/recent/actual.md"]);
+  });
+
+  it("reports missing recent files without granting or reading them", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain, reads } = createController({
+      windows: [window],
+      recentFiles: [{
+        path: "/recent/missing.md",
+        name: "missing.md",
+        lastOpenedAt: 20,
+      }],
+      fileExists: async (path: string) => path !== "/recent/missing.md",
+    });
+
+    const files = await ipcMain.invoke(
+      markdeskChannels.getRecentFiles,
+      { sender: window.webContents },
+    );
+    expect(files).toMatchObject({
+      ok: true,
+      value: [{ path: "/recent/missing.md", exists: false }],
+    });
+
+    const missing = await ipcMain.invoke(
+      markdeskChannels.readRecentFile,
+      { sender: window.webContents },
+      "/recent/missing.md",
+    );
+    expect(error(missing)?.code).toBe("invalid-path");
+    expect(reads).toEqual([]);
+  });
+
+  it("clears recent files for the requesting sender and broadcasts the result", async () => {
+    const first = new FakeWindow(1);
+    const second = new FakeWindow(2);
+    const { ipcMain, recentFiles } = createController({
+      windows: [first, second],
+      recentFiles: [{
+        path: "/recent/a.md",
+        name: "a.md",
+        lastOpenedAt: 20,
+      }],
+    });
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.clearRecentFiles,
+      { sender: first.webContents },
+    );
+    expect(result).toMatchObject({ ok: true, value: undefined });
+    expect(recentFiles).toEqual([]);
+    expect(first.webContents.sent).toEqual([
+      {
+        channel: markdeskChannels.recentFilesChanged,
+        payload: [],
+      },
+    ]);
+    expect(second.webContents.sent).toEqual([
+      {
+        channel: markdeskChannels.recentFilesChanged,
+        payload: [],
+      },
+    ]);
+  });
+
+  it("routes window closing through a renderer close request", async () => {
+    const window = new CloseProtectedWindow(1);
+    const { controller, ipcMain } = createController({ windows: [window] });
+    controller.protectWindowClose(window);
+
+    expect(window.emitClose()).toBe(true);
+    expect(window.closed).toBe(false);
+    expect(window.webContents.sent).toEqual([
+      { channel: markdeskChannels.closeRequested, payload: undefined },
+    ]);
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.requestClose,
+      { sender: window.webContents },
+    );
+
+    expect(result).toMatchObject({ ok: true, value: undefined });
+    expect(window.canClose).toBe(true);
+    expect(window.closed).toBe(true);
+  });
+
+  it("does not let one renderer close another protected window", async () => {
+    const first = new CloseProtectedWindow(1);
+    const second = new CloseProtectedWindow(2);
+    const { controller, ipcMain } = createController({
+      windows: [first, second],
+    });
+    controller.protectWindowClose(first);
+    controller.protectWindowClose(second);
+    first.emitClose();
+
+    const denied = await ipcMain.invoke(
+      markdeskChannels.requestClose,
+      { sender: second.webContents },
+    );
+    expect(error(denied)?.code).toBe("invalid-argument");
+    expect(first.closed).toBe(false);
+    expect(second.closed).toBe(false);
+
+    const allowed = await ipcMain.invoke(
+      markdeskChannels.requestClose,
+      { sender: first.webContents },
+    );
+    expect(allowed).toMatchObject({ ok: true, value: undefined });
+    expect(first.closed).toBe(true);
+    expect(second.closed).toBe(false);
   });
 });
 

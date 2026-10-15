@@ -1,7 +1,12 @@
-import { BrowserWindow, Menu, app, shell } from "electron";
+import { BrowserWindow, app, shell } from "electron";
+import type { Menu } from "electron";
 import { join } from "node:path";
-import { registerSecureFileIpc, sendMenuCommand } from "./ipc";
-import type { MenuCommand } from "../shared/types";
+import {
+  createSecureFileIpcController,
+  sendOpenRecentFile,
+} from "./ipc";
+import { createApplicationMenu } from "./menu";
+import type { RecentFileStatus } from "../shared/types";
 import {
   contentSecurityPolicy,
   preventInAppNavigation,
@@ -9,68 +14,22 @@ import {
   shouldOpenExternalUrl,
 } from "./security";
 
-interface CommandMenuItem {
-  command: MenuCommand;
-  label: string;
-  accelerator?: string;
-}
+const fileIpcController = createSecureFileIpcController({
+  recentStoragePath: join(app.getPath("userData"), "recent-files.json"),
+});
+const menusByWindow = new Map<BrowserWindow, Menu>();
+let currentRecentFiles: RecentFileStatus[] = [];
 
-const fileCommands: CommandMenuItem[] = [
-  { command: "new", label: "新建", accelerator: "CmdOrCtrl+N" },
-  { command: "open", label: "打开…", accelerator: "CmdOrCtrl+O" },
-  { command: "save", label: "保存", accelerator: "CmdOrCtrl+S" },
-  {
-    command: "save-as",
-    label: "另存为…",
-    accelerator: "CmdOrCtrl+Shift+S",
-  },
-];
-
-const modeCommands: CommandMenuItem[] = [
-  {
-    command: "toggle-wysiwyg",
-    label: "所见即所得模式",
-    accelerator: "CmdOrCtrl+1",
-  },
-  { command: "toggle-source", label: "源码模式", accelerator: "CmdOrCtrl+2" },
-  { command: "toggle-read", label: "阅读模式", accelerator: "CmdOrCtrl+3" },
-];
-
-function commandItem(window: BrowserWindow, item: CommandMenuItem) {
-  return {
-    label: item.label,
-    accelerator: item.accelerator,
-    click: () => sendMenuCommand(window, item.command),
-  };
-}
-
-export function createApplicationMenu(
-  window: BrowserWindow = createMainWindow(),
-): Menu {
-  const template: Array<Electron.MenuItemConstructorOptions> = [
-    ...(process.platform === "darwin"
-      ? [{ role: "appMenu" } satisfies Electron.MenuItemConstructorOptions]
-      : []),
-    {
-      label: "文件",
-      submenu: fileCommands.map((item) => commandItem(window, item)),
-    },
-    {
-      label: "编辑",
-      role: "editMenu",
-    },
-    {
-      label: "模式",
-      submenu: modeCommands.map((item) => commandItem(window, item)),
-    },
-    ...(process.platform === "darwin"
-      ? [{ role: "windowMenu" } satisfies Electron.MenuItemConstructorOptions]
-      : []),
-  ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
-  return menu;
+function refreshApplicationMenu(window: BrowserWindow): void {
+  menusByWindow.set(
+    window,
+    createApplicationMenu({
+      window,
+      recentFiles: currentRecentFiles,
+      onOpenRecentFile: (path) => sendOpenRecentFile(window, path),
+      onClearRecentFiles: () => void fileIpcController.clearRecentFiles(),
+    }),
+  );
 }
 
 export function createMainWindow(): BrowserWindow {
@@ -105,19 +64,31 @@ export function createMainWindow(): BrowserWindow {
   if (devServerUrl) void win.loadURL(devServerUrl);
   else void win.loadFile(join(__dirname, "../dist/index.html"));
 
+  fileIpcController.protectWindowClose(win);
+  refreshApplicationMenu(win);
+  win.once("closed", () => {
+    menusByWindow.delete(win);
+  });
   return win;
 }
 
 app.whenReady().then(() => {
-  registerSecureFileIpc();
-  const mainWindow = createMainWindow();
-  createApplicationMenu(mainWindow);
+  fileIpcController.register();
+  createMainWindow();
+  void fileIpcController.refreshRecentFiles();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      const reopenedWindow = createMainWindow();
-      createApplicationMenu(reopenedWindow);
+      createMainWindow();
     }
   });
+});
+
+fileIpcController.onRecentFilesChanged((files) => {
+  currentRecentFiles = files;
+  for (const window of menusByWindow.keys()) {
+    if (window.isDestroyed()) menusByWindow.delete(window);
+    else refreshApplicationMenu(window);
+  }
 });
 
 app.on("window-all-closed", () => {
