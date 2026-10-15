@@ -107,6 +107,7 @@ interface WindowFileGrants {
 
 interface CloseRequest {
   authorizeAndClose(): void;
+  cancel(): void;
 }
 
 type RecentFilesListener = (files: RecentFileStatus[]) => void;
@@ -569,6 +570,7 @@ export function createSecureFileIpcController(
       async (event): Promise<IpcResult<void>> =>
         guarded(async () => {
           grantsForSender(event.sender);
+          closeRequests.get(event.sender.id)?.cancel();
           closeRequests.delete(event.sender.id);
         }),
     );
@@ -599,6 +601,10 @@ export function createSecureFileIpcController(
             closeRequest = null;
             closeRequests.delete(window.webContents.id);
             window.close();
+          },
+          cancel: () => {
+            closeRequest = null;
+            closeRequests.delete(window.webContents.id);
           },
         };
         closeRequests.set(window.webContents.id, closeRequest);

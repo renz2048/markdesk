@@ -144,6 +144,19 @@ export default function App() {
     };
   }, [resolvedTheme, themePreference]);
 
+  useEffect(() => {
+    // A deterministic concurrent-edit signal for lifecycle tests. It only
+    // increments the same revision guard used by real editor changes and
+    // provides no privileged file or IPC access.
+    const markDocumentEdited = () => {
+      lifecycleRef.current.markEdited();
+    };
+    window.addEventListener("markdesk:document-edited", markDocumentEdited);
+    return () => {
+      window.removeEventListener("markdesk:document-edited", markDocumentEdited);
+    };
+  }, []);
+
   const outlineItems = useMemo(() => outlineFromDoc(doc), [doc]);
   const activeHeadingPos = useMemo(
     () => activeOutlinePosition(outlineItems, selectionPosition),
@@ -367,7 +380,11 @@ export default function App() {
       setPendingFileAction(null);
 
       if (action.type === "close") {
-        await api?.requestClose();
+        try {
+          await api?.requestClose();
+        } catch (error) {
+          setFileActionError(toFileActionError(error));
+        }
         return;
       }
       if (action.type === "new") {

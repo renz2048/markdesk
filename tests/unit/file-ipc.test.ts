@@ -80,7 +80,8 @@ class CloseProtectedWindow extends FakeWindow {
 
   emitClose(): boolean {
     let prevented = false;
-    for (const listener of this.closeListeners.splice(0)) {
+    // Electron keeps close listeners installed across repeated close attempts.
+    for (const listener of this.closeListeners) {
       listener({
         preventDefault: () => {
           prevented = true;
@@ -482,7 +483,14 @@ describe("secure file IPC grants", () => {
     expect(error(afterCancel)?.code).toBe("invalid-argument");
     expect(window.closed).toBe(false);
 
-    window.emitClose();
+    const retriedClose = window.emitClose();
+    expect(retriedClose).toBe(true);
+    expect(window.closed).toBe(false);
+    expect(window.webContents.sent).toHaveLength(2);
+    expect(window.webContents.sent[1]).toEqual({
+      channel: markdeskChannels.closeRequested,
+      payload: undefined,
+    });
     const reopened = await ipcMain.invoke(
       markdeskChannels.requestClose,
       { sender: window.webContents },

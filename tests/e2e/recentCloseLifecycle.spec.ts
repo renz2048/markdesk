@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "@playwright/test";
+import { markdeskChannels } from "../../src/shared/types";
 
 type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
 type Page = Awaited<ReturnType<ElectronApplication["firstWindow"]>>;
@@ -45,7 +46,7 @@ test.beforeAll(async () => {
   await writeFile(alphaPath, "# Alpha\n", "utf8");
   await writeFile(
     betaPath,
-    `${"# Beta paragraph\n".repeat(120_000)}# Beta end\n`,
+    `${"Beta ".repeat(1_500_000)}# Beta end\n`,
     "utf8",
   );
   await writeFile(join(userData, "recent-files.json"), JSON.stringify([
@@ -125,16 +126,26 @@ test("dirty replacement supports cancel, save, and discard", async () => {
   await expect(await readFile(alphaPath, "utf8")).toBe("# Local edit\n");
 });
 
-test("an opening document makes the editor inert and preserves local edits", async () => {
+test("an opening document stays inert and a concurrent edit blocks replacement", async () => {
   await openRecent(alphaPath);
+  await page.getByTestId("mode-wysiwyg").click();
+  await expect(page.getByTestId("wysiwyg-editor-content")).toContainText(
+    "# Alpha",
+  );
   await expect(page.getByTestId("app-shell")).toHaveAttribute(
     "aria-busy",
     "false",
   );
 
-  const opening = page.locator(
-    `[data-testid="open-recent-file"][data-path="${betaPath}"]`,
-  ).click();
+  await app.evaluate(
+    ({ BrowserWindow }, recent) => {
+      BrowserWindow.getFocusedWindow()?.webContents.send(
+        recent.channel,
+        { path: recent.path },
+      );
+    },
+    { path: betaPath, channel: markdeskChannels.openRecentFile },
+  );
   await expect(page.getByTestId("app-shell")).toHaveAttribute(
     "aria-busy",
     "true",
@@ -143,15 +154,24 @@ test("an opening document makes the editor inert and preserves local edits", asy
     "aria-live",
     "polite",
   );
-  await opening;
+  await page.evaluate(() => {
+    window.dispatchEvent(new CustomEvent("markdesk:document-edited"));
+  });
   await expect(page.getByTestId("app-shell")).toHaveAttribute(
     "aria-busy",
     "false",
   );
+  await expect(page.getByTestId("file-error")).toHaveAttribute(
+    "data-error-code",
+    "file-changed",
+  );
   await expect(page.getByTestId("document-name")).toHaveText(
-    basename(betaPath),
+    basename(alphaPath),
   );
   await expect(page.getByTestId("wysiwyg-editor-content")).toContainText(
+    "# Alpha",
+  );
+  await expect(page.getByTestId("wysiwyg-editor-content")).not.toContainText(
     "Beta end",
   );
 });
