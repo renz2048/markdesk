@@ -78,6 +78,7 @@ export const markdeskChannels = {
   fileChanged: "markdesk:file-changed",
   closeRequested: "markdesk:close-requested",
   requestClose: "markdesk:request-close",
+  cancelClose: "markdesk:cancel-close",
 } as const;
 
 export interface MarkDeskRendererApi {
@@ -102,6 +103,7 @@ export interface MarkDeskRendererApi {
   ): () => void;
   onCloseRequested(listener: () => void): () => void;
   requestClose(): Promise<void>;
+  cancelClose(): Promise<void>;
 }
 
 declare global {

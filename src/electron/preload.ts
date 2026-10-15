@@ -56,6 +56,8 @@ const rendererApi: MarkDeskRendererApi = {
     invokeResult(markdeskChannels.clearRecentFiles),
   requestClose: (): Promise<void> =>
     invokeResult(markdeskChannels.requestClose),
+  cancelClose: (): Promise<void> =>
+    invokeResult(markdeskChannels.cancelClose),
   onMenuCommand: (listener: (command: MenuCommand) => void) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

@@ -563,6 +563,15 @@ export function createSecureFileIpcController(
           request.authorizeAndClose();
         }),
     );
+
+    ipc.handle(
+      markdeskChannels.cancelClose,
+      async (event): Promise<IpcResult<void>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          closeRequests.delete(event.sender.id);
+        }),
+    );
   }
 
   async function notifyFileChanged(path: string): Promise<void> {
@@ -578,20 +587,26 @@ export function createSecureFileIpcController(
 
   function protectWindowClose(window: CloseableWindowLike): void {
     let authorizedClose = false;
-    closeRequests.set(window.webContents.id, {
-      authorizeAndClose: () => {
-        if (window.webContents.isDestroyed?.()) return;
-        authorizedClose = true;
-        closeRequests.delete(window.webContents.id);
-        window.close();
-      },
-    });
+    let closeRequest: CloseRequest | null = null;
     window.on("close", (event) => {
       if (authorizedClose || window.webContents.isDestroyed?.()) return;
       event.preventDefault();
+      if (!closeRequest) {
+        closeRequest = {
+          authorizeAndClose: () => {
+            if (window.webContents.isDestroyed?.()) return;
+            authorizedClose = true;
+            closeRequest = null;
+            closeRequests.delete(window.webContents.id);
+            window.close();
+          },
+        };
+        closeRequests.set(window.webContents.id, closeRequest);
+      }
       window.webContents.send(markdeskChannels.closeRequested, undefined);
     });
     window.once("closed", () => {
+      closeRequest = null;
       closeRequests.delete(window.webContents.id);
       revoke(window.webContents.id);
     });

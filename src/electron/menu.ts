@@ -1,7 +1,5 @@
 import { Menu } from "electron";
-import type { BrowserWindow } from "electron";
 import type { MenuCommand, RecentFileStatus } from "../shared/types";
-import { sendMenuCommand } from "./ipc";
 
 interface CommandMenuItem {
   command: MenuCommand;
@@ -30,23 +28,26 @@ const modeCommands: CommandMenuItem[] = [
   { command: "toggle-read", label: "阅读模式", accelerator: "CmdOrCtrl+3" },
 ];
 
-function commandItem(window: BrowserWindow, item: CommandMenuItem) {
+function commandItem(
+  sendCommand: (command: MenuCommand) => void,
+  item: CommandMenuItem,
+) {
   return {
     label: item.label,
     accelerator: item.accelerator,
-    click: () => sendMenuCommand(window, item.command),
+    click: () => sendCommand(item.command),
   };
 }
 
 export interface ApplicationMenuOptions {
-  window: BrowserWindow;
+  onMenuCommand(command: MenuCommand): void;
   recentFiles?: RecentFileStatus[];
   onOpenRecentFile?(path: string): void;
   onClearRecentFiles?(): void;
 }
 
 export function createApplicationMenu({
-  window,
+  onMenuCommand,
   recentFiles = [],
   onOpenRecentFile,
   onClearRecentFiles,
@@ -69,7 +70,7 @@ export function createApplicationMenu({
     {
       label: "文件",
       submenu: [
-        ...fileCommands.map((item) => commandItem(window, item)),
+        ...fileCommands.map((item) => commandItem(onMenuCommand, item)),
         { type: "separator" },
         {
           label: "最近打开",
@@ -93,7 +94,7 @@ export function createApplicationMenu({
     },
     {
       label: "模式",
-      submenu: modeCommands.map((item) => commandItem(window, item)),
+      submenu: modeCommands.map((item) => commandItem(onMenuCommand, item)),
     },
     ...(process.platform === "darwin"
       ? [{ role: "windowMenu" } satisfies Electron.MenuItemConstructorOptions]

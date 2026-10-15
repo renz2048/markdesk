@@ -229,6 +229,7 @@ describe("secure file IPC grants", () => {
       markdeskChannels.readRecentFile,
       markdeskChannels.clearRecentFiles,
       markdeskChannels.requestClose,
+      markdeskChannels.cancelClose,
     ]) {
       const result = await ipcMain.invoke(channel, event);
       expect(error(result)?.code).toBe("unexpected-error");
@@ -453,6 +454,40 @@ describe("secure file IPC grants", () => {
 
     expect(result).toMatchObject({ ok: true, value: undefined });
     expect(window.canClose).toBe(true);
+    expect(window.closed).toBe(true);
+  });
+
+  it("issues a close token only for an intercepted close and cancels it", async () => {
+    const window = new CloseProtectedWindow(1);
+    const { controller, ipcMain } = createController({ windows: [window] });
+    controller.protectWindowClose(window);
+
+    const beforeRequest = await ipcMain.invoke(
+      markdeskChannels.requestClose,
+      { sender: window.webContents },
+    );
+    expect(error(beforeRequest)?.code).toBe("invalid-argument");
+
+    window.emitClose();
+    const canceled = await ipcMain.invoke(
+      markdeskChannels.cancelClose,
+      { sender: window.webContents },
+    );
+    expect(canceled).toMatchObject({ ok: true, value: undefined });
+
+    const afterCancel = await ipcMain.invoke(
+      markdeskChannels.requestClose,
+      { sender: window.webContents },
+    );
+    expect(error(afterCancel)?.code).toBe("invalid-argument");
+    expect(window.closed).toBe(false);
+
+    window.emitClose();
+    const reopened = await ipcMain.invoke(
+      markdeskChannels.requestClose,
+      { sender: window.webContents },
+    );
+    expect(reopened).toMatchObject({ ok: true, value: undefined });
     expect(window.closed).toBe(true);
   });
 

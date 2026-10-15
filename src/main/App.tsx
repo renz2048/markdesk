@@ -93,6 +93,8 @@ export default function App() {
   );
   const lifecycleRef = useRef(new FileLifecycleController());
   const pendingActionRef = useRef<PendingFileAction | null>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const api = typeof window === "undefined" ? undefined : window.markdesk;
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [selectionPosition, setSelectionPosition] = useState(0);
@@ -206,6 +208,13 @@ export default function App() {
         doc = parseMarkdown(file.content);
       } catch (error) {
         setFileActionError(toFileActionError(error, "parse"));
+        return false;
+      }
+      if (!lifecycleRef.current.isCurrent(revision)) {
+        setFileActionError({
+          code: "file-changed",
+          message: "文件已在打开过程中修改，已保留当前更改。",
+        });
         return false;
       }
       useDocumentStore.getState().replaceDocument({
@@ -373,9 +382,9 @@ export default function App() {
   const requestFileAction = useCallback(
     (action: PendingFileAction): void => {
       if (lifecycleRef.current.busy || pendingActionRef.current) return;
+      pendingActionRef.current = action;
+      setPendingFileAction(action);
       if (useDocumentStore.getState().dirty) {
-        pendingActionRef.current = action;
-        setPendingFileAction(action);
         return;
       }
       void finishPendingFileAction(action);
@@ -386,7 +395,10 @@ export default function App() {
   const cancelPendingFileAction = useCallback((): void => {
     pendingActionRef.current = null;
     setPendingFileAction(null);
-  }, []);
+    void api?.cancelClose().catch((error) => {
+      setFileActionError(toFileActionError(error));
+    });
+  }, [api]);
 
   const saveAndContinue = useCallback(async (): Promise<void> => {
     const action = pendingActionRef.current;
@@ -489,9 +501,40 @@ export default function App() {
   }, [api]);
 
   const showWelcome = filePath === null && !dirty;
+  const closeProtectionVisible = pendingFileAction !== null && dirty;
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const shouldInertBackground = fileBusy || closeProtectionVisible;
+    if (shouldInertBackground) {
+      if (
+        !restoreFocusRef.current &&
+        document.activeElement instanceof HTMLElement &&
+        shell.contains(document.activeElement)
+      ) {
+        restoreFocusRef.current = document.activeElement;
+      }
+      shell.setAttribute("inert", "");
+    } else {
+      shell.removeAttribute("inert");
+      const restoreFocus = restoreFocusRef.current;
+      restoreFocusRef.current = null;
+      if (restoreFocus?.isConnected) restoreFocus.focus();
+    }
+  }, [fileBusy, closeProtectionVisible]);
 
   return (
-    <main className="app-shell" data-testid="app-shell">
+    <>
+      <main
+        ref={shellRef}
+        className="app-shell"
+        data-testid="app-shell"
+        aria-busy={
+          fileBusy || closeProtectionVisible ? "true" : "false"
+        }
+        aria-live="polite"
+      >
       <EditorViewContext.Provider value={editorView}>
         <SetEditorViewContext.Provider value={setEditorView}>
           <SetEditorSelectionContext.Provider value={setSelectionPosition}>
@@ -503,8 +546,8 @@ export default function App() {
               onThemeChange={setThemePreference}
               onNewDocument={() => requestFileAction({ type: "new" })}
               onOpenDocument={() => requestFileAction({ type: "open" })}
-              onSaveDocument={saveDocument}
-              onSaveDocumentAs={saveDocumentAs}
+              onSaveDocument={() => void saveDocument()}
+              onSaveDocumentAs={() => void saveDocumentAs()}
               fileBusy={fileBusy}
               actionPending={pendingFileAction !== null}
             />
@@ -567,8 +610,9 @@ export default function App() {
         </SetEditorViewContext.Provider>
       </EditorViewContext.Provider>
 
-      <StatusBar fileName={fileName} dirty={dirty} mode={mode} />
-      {pendingFileAction && dirty ? (
+        <StatusBar fileName={fileName} dirty={dirty} mode={mode} />
+      </main>
+      {closeProtectionVisible ? (
         <CloseProtectionDialog
           busy={fileBusy}
           fileName={fileName}
@@ -577,7 +621,7 @@ export default function App() {
           onCancel={cancelPendingFileAction}
         />
       ) : null}
-    </main>
+    </>
   );
 }
 
@@ -598,9 +642,9 @@ function ViewBar({
   onModeChange(mode: EditorMode): void;
   onThemeChange(theme: ThemePreference): void;
   onNewDocument(): void;
-  onOpenDocument(): void | Promise<void>;
-  onSaveDocument(): void | Promise<void>;
-  onSaveDocumentAs(): void | Promise<void>;
+  onOpenDocument(): void;
+  onSaveDocument(): void;
+  onSaveDocumentAs(): void;
   fileBusy: boolean;
   actionPending: boolean;
 }) {
@@ -767,20 +811,24 @@ function WelcomeView({
                     className="recent-file-button"
                     data-testid="open-recent-file"
                     data-path={file.path}
-                    disabled={fileBusy || !file.exists}
-                    onClick={() => onOpenRecentFile(file.path)}
+                    aria-disabled={file.exists ? undefined : "true"}
+                    disabled={fileBusy}
+                    onClick={() => {
+                      if (file.exists) onOpenRecentFile(file.path);
+                    }}
                   >
                     <span className="recent-file-name">{file.name}</span>
                     <span className="recent-file-path">{file.path}</span>
-                    {!file.exists ? (
-                      <span
-                        className="recent-file-missing"
-                        data-testid="recent-file-missing"
-                      >
-                        文件不存在
-                      </span>
-                    ) : null}
                   </button>
+                  {!file.exists ? (
+                    <span
+                      className="recent-file-missing"
+                      role="status"
+                      data-testid="recent-file-missing"
+                    >
+                      文件不存在
+                    </span>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -804,18 +852,61 @@ function CloseProtectionDialog({
   onDiscard(): void;
   onCancel(): void;
 }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusable = dialog.querySelector<HTMLButtonElement>(
+      "button:not([disabled])",
+    );
+    (focusable ?? dialog).focus();
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Tab") return;
+      const controls = [
+        ...dialog.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
+        ),
+      ].filter((element) => element.offsetParent !== null);
+      if (controls.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || active === dialog)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || active === dialog)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, []);
+
   return (
     <div
       className="dialog-backdrop"
       data-testid="close-protection-backdrop"
     >
-      <section
+      <div
+        ref={dialogRef}
         className="close-protection-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="close-protection-title"
         aria-describedby="close-protection-description"
         data-testid="close-protection-dialog"
+        tabIndex={-1}
         onKeyDown={(event) => {
           if (event.key === "Escape" && !busy) {
             event.preventDefault();
@@ -853,12 +944,13 @@ function CloseProtectionDialog({
           <button
             type="button"
             data-testid="close-protection-cancel"
+            disabled={busy}
             onClick={onCancel}
           >
             取消
           </button>
         </div>
-      </section>
+      </div>
     </div>
   );
 }

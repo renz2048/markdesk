@@ -214,6 +214,9 @@ body {
 }
 
 .recent-file-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -250,6 +253,11 @@ body {
   opacity: 0.62;
 }
 
+.recent-file-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .recent-file-name {
   overflow: hidden;
   font-weight: 650;
@@ -266,6 +274,7 @@ body {
 }
 
 .recent-file-missing {
+  flex: none;
   color: var(--danger);
   font-size: 0.78rem;
 }
@@ -750,5 +759,11 @@ body {
 
   .recent-file-button {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .recent-file-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 }

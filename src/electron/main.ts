@@ -1,11 +1,12 @@
 import { BrowserWindow, app, shell } from "electron";
-import type { Menu } from "electron";
 import { join } from "node:path";
 import {
   createSecureFileIpcController,
+  sendMenuCommand,
   sendOpenRecentFile,
 } from "./ipc";
 import { createApplicationMenu } from "./menu";
+import { resolveFocusedMarkDeskWindow } from "./menu-target";
 import type { RecentFileStatus } from "../shared/types";
 import {
   contentSecurityPolicy,
@@ -17,19 +18,37 @@ import {
 const fileIpcController = createSecureFileIpcController({
   recentStoragePath: join(app.getPath("userData"), "recent-files.json"),
 });
-const menusByWindow = new Map<BrowserWindow, Menu>();
 let currentRecentFiles: RecentFileStatus[] = [];
 
-function refreshApplicationMenu(window: BrowserWindow): void {
-  menusByWindow.set(
-    window,
-    createApplicationMenu({
-      window,
-      recentFiles: currentRecentFiles,
-      onOpenRecentFile: (path) => sendOpenRecentFile(window, path),
-      onClearRecentFiles: () => void fileIpcController.clearRecentFiles(),
-    }),
-  );
+function commandTarget(): BrowserWindow | null {
+  return resolveFocusedMarkDeskWindow(BrowserWindow.getAllWindows());
+}
+
+function refreshApplicationMenu(): void {
+  createApplicationMenu({
+    onMenuCommand: (command) => {
+      const target = commandTarget();
+      try {
+        if (target) sendMenuCommand(target, command);
+      } catch (error) {
+        console.error("无法发送菜单命令", error);
+      }
+    },
+    recentFiles: currentRecentFiles,
+    onOpenRecentFile: (path) => {
+      const target = commandTarget();
+      try {
+        if (target) sendOpenRecentFile(target, path);
+      } catch (error) {
+        console.error("无法打开最近文件", error);
+      }
+    },
+    onClearRecentFiles: () => {
+      fileIpcController.clearRecentFiles().catch((error) => {
+        console.error("无法清除最近文件", error);
+      });
+    },
+  });
 }
 
 export function createMainWindow(): BrowserWindow {
@@ -65,17 +84,16 @@ export function createMainWindow(): BrowserWindow {
   else void win.loadFile(join(__dirname, "../dist/index.html"));
 
   fileIpcController.protectWindowClose(win);
-  refreshApplicationMenu(win);
-  win.once("closed", () => {
-    menusByWindow.delete(win);
-  });
   return win;
 }
 
 app.whenReady().then(() => {
   fileIpcController.register();
+  refreshApplicationMenu();
   createMainWindow();
-  void fileIpcController.refreshRecentFiles();
+  fileIpcController.refreshRecentFiles().catch((error) => {
+    console.error("无法读取最近文件", error);
+  });
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
@@ -85,10 +103,7 @@ app.whenReady().then(() => {
 
 fileIpcController.onRecentFilesChanged((files) => {
   currentRecentFiles = files;
-  for (const window of menusByWindow.keys()) {
-    if (window.isDestroyed()) menusByWindow.delete(window);
-    else refreshApplicationMenu(window);
-  }
+  refreshApplicationMenu();
 });
 
 app.on("window-all-closed", () => {
