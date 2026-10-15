@@ -1,4 +1,10 @@
-import { BrowserWindow, dialog, ipcMain } from "electron";
+import {
+  BrowserWindow,
+  dialog,
+  ipcMain,
+} from "electron";
+import { realpath } from "node:fs/promises";
+import { posix, win32 } from "node:path";
 import {
   FileServiceError,
   isFileFingerprint,
@@ -8,24 +14,73 @@ import {
 } from "./file-service";
 import {
   markdeskChannels,
-  type FileReadResult,
   type FileFingerprint,
+  type FileReadResult,
   type FileWriteResult,
   type IpcResult,
   type MenuCommand,
 } from "../shared/types";
 
-const allowedReadPaths = new Set<string>();
-const allowedWritePaths = new Set<string>();
-const requiredWriteFingerprints = new Map<string, FileFingerprint>();
-let registered = false;
+interface WebContentsLike {
+  id: number;
+  isDestroyed?(): boolean;
+  once(event: "destroyed", listener: () => void): void;
+  send(channel: string, payload: unknown): void;
+}
 
-function windowForSender(sender: Electron.WebContents): BrowserWindow | null {
-  return (
-    BrowserWindow.getAllWindows().find(
-      (window) => window.webContents.id === sender.id,
-    ) ?? null
-  );
+interface BrowserWindowLike {
+  webContents: WebContentsLike;
+  once(event: "closed", listener: () => void): void;
+}
+
+interface IpcMainLike {
+  handle(
+    channel: string,
+    listener: (
+      event: { sender: WebContentsLike },
+      ...args: unknown[]
+    ) => unknown,
+  ): void;
+}
+
+interface DialogLike {
+  showOpenDialog(
+    window: BrowserWindowLike,
+    options: {
+      title: string;
+      properties: string[];
+      filters: Array<{ name: string; extensions: string[] }>;
+    },
+  ): Promise<{ canceled?: boolean; filePaths?: string[] }>;
+  showSaveDialog(
+    window: BrowserWindowLike,
+    options: {
+      title: string;
+      defaultPath: string;
+      filters: Array<{ name: string; extensions: string[] }>;
+    },
+  ): Promise<{ canceled?: boolean; filePath?: string }>;
+}
+
+export interface SecureFileIpcDependencies {
+  ipcMain?: IpcMainLike;
+  dialog?: DialogLike;
+  getWindows?: () => BrowserWindowLike[];
+  canonicalize?: (path: string) => Promise<string>;
+  readFile?: (path: string) => Promise<FileReadResult>;
+  writeFile?: (
+    path: string,
+    content: string,
+    expected?: FileFingerprint,
+  ) => Promise<FileWriteResult>;
+}
+
+interface WindowFileGrants {
+  window: BrowserWindowLike;
+  sender: WebContentsLike;
+  readPaths: Set<string>;
+  writePaths: Set<string>;
+  writeBaselines: Map<string, FileFingerprint>;
 }
 
 function success<TValue>(value: TValue): IpcResult<TValue> {
@@ -56,30 +111,31 @@ async function guarded<TValue>(
   }
 }
 
-function requireAllowedReadPath(path: unknown): string {
-  if (!isMarkdownPath(path)) {
-    throw new FileServiceError("invalid-path", "Markdown 文件路径无效。");
-  }
-  if (!allowedReadPaths.has(path)) {
-    throw new FileServiceError(
-      "invalid-path",
-      "此文件尚未通过 MarkDesk 明确打开。",
-    );
-  }
-  return path;
+function normalizeUnresolvedPath(path: string): string {
+  const normalized = win32.isAbsolute(path)
+    ? win32.resolve(path)
+    : posix.resolve(path);
+  return win32.isAbsolute(path) ? normalized.toLowerCase() : normalized;
 }
 
-function requireAllowedWritePath(path: unknown): string {
-  if (!isMarkdownPath(path)) {
-    throw new FileServiceError("invalid-path", "Markdown 文件路径无效。");
+async function defaultCanonicalize(path: string): Promise<string> {
+  try {
+    const real = await realpath(path);
+    return normalizeUnresolvedPath(real);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      return normalizeUnresolvedPath(path);
+    }
+    throw error;
   }
-  if (!allowedReadPaths.has(path) && !allowedWritePaths.has(path)) {
-    throw new FileServiceError(
-      "invalid-path",
-      "此文件路径未获准保存。",
-    );
-  }
-  return path;
+}
+
+function defaultWindows(): BrowserWindowLike[] {
+  return BrowserWindow.getAllWindows();
+}
+
+function windowsReservedName(value: string): boolean {
+  return /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(value);
 }
 
 function defaultSaveName(value: unknown): string {
@@ -88,7 +144,10 @@ function defaultSaveName(value: unknown): string {
     value.length === 0 ||
     value.length > 255 ||
     /[/\\]/u.test(value) ||
-    /[\0-\x1f\u007f]/u.test(value)
+    /[\0-\x1f\u007f]/u.test(value) ||
+    /[<>:"|?*]/u.test(value) ||
+    windowsReservedName(value) ||
+    /[. ]$/u.test(value)
   ) {
     throw new FileServiceError("invalid-argument", "默认文件名无效。");
   }
@@ -97,115 +156,244 @@ function defaultSaveName(value: unknown): string {
     : `${value}.md`;
 }
 
-export function registerSecureFileIpc(): void {
-  if (registered) return;
-  registered = true;
+export interface SecureFileIpcController {
+  register(): void;
+  notifyFileChanged(path: string): Promise<void>;
+}
 
-  ipcMain.handle(
-    markdeskChannels.chooseMarkdownFile,
-    async (event): Promise<IpcResult<string | null>> =>
-      guarded(async () => {
-        const window = windowForSender(event.sender);
-        if (!window) throw new Error("unrecognized renderer");
+export function createSecureFileIpcController(
+  dependencies: SecureFileIpcDependencies = {},
+): SecureFileIpcController {
+  const ipc = dependencies.ipcMain ?? ipcMain;
+  const dialogs = dependencies.dialog ?? dialog;
+  const getWindows = dependencies.getWindows ?? defaultWindows;
+  const canonicalize = dependencies.canonicalize ?? defaultCanonicalize;
+  const read = dependencies.readFile ?? readMarkdownFile;
+  const write = dependencies.writeFile ?? writeMarkdownFile;
+  const grantsBySender = new Map<number, WindowFileGrants>();
+  let registered = false;
 
-        const selection = await dialog.showOpenDialog(window, {
-          title: "打开 Markdown",
-          properties: ["openFile"],
-          filters: [
-            { name: "Markdown", extensions: ["md", "markdown"] },
-          ],
-        });
-        const path = selection.filePaths[0];
-        if (!path || !isMarkdownPath(path)) return null;
+  function windowForSender(sender: WebContentsLike): BrowserWindowLike | null {
+    if (sender.isDestroyed?.()) return null;
+    return getWindows().find((window) => window.webContents === sender) ?? null;
+  }
 
-        allowedReadPaths.add(path);
-        return path;
-      }),
-  );
+  function revoke(senderId: number) {
+    grantsBySender.delete(senderId);
+  }
 
-  ipcMain.handle(
-    markdeskChannels.chooseSaveLocation,
-    async (
-      event,
-      defaultName: unknown,
-    ): Promise<IpcResult<string | null>> =>
-      guarded(async () => {
-        const window = windowForSender(event.sender);
-        if (!window) throw new Error("unrecognized renderer");
-        const safeDefaultName = defaultSaveName(defaultName);
+  function grantsForSender(sender: WebContentsLike): WindowFileGrants {
+    const window = windowForSender(sender);
+    if (!window) {
+      throw new FileServiceError(
+        "unexpected-error",
+        "无法识别发起操作的窗口。",
+      );
+    }
 
-        const selection = await dialog.showSaveDialog(window, {
-          title: "保存 Markdown",
-          defaultPath: safeDefaultName,
-          filters: [
-            { name: "Markdown", extensions: ["md", "markdown"] },
-          ],
-        });
-        const path = selection.filePath;
-        if (!path || !isMarkdownPath(path)) return null;
+    const existing = grantsBySender.get(sender.id);
+    if (existing) return existing;
 
-        allowedWritePaths.add(path);
-        return path;
-      }),
-  );
+    const grants: WindowFileGrants = {
+      window,
+      sender,
+      readPaths: new Set(),
+      writePaths: new Set(),
+      writeBaselines: new Map(),
+    };
+    grantsBySender.set(sender.id, grants);
+    sender.once("destroyed", () => revoke(sender.id));
+    window.once("closed", () => revoke(sender.id));
+    return grants;
+  }
 
-  ipcMain.handle(
-    markdeskChannels.readFile,
-    async (_event, path: unknown): Promise<IpcResult<FileReadResult>> =>
-      guarded(async () => {
-        const allowedPath = requireAllowedReadPath(path);
-        const file = await readMarkdownFile(allowedPath);
-        allowedWritePaths.add(allowedPath);
-        requiredWriteFingerprints.set(allowedPath, {
-          hash: file.hash,
-          mtimeMs: file.mtimeMs,
-          size: file.size,
-        });
-        return file;
-      }),
-  );
+  async function canonicalMarkdownPath(path: unknown): Promise<string> {
+    if (!isMarkdownPath(path)) {
+      throw new FileServiceError("invalid-path", "Markdown 文件路径无效。");
+    }
 
-  ipcMain.handle(
-    markdeskChannels.writeFile,
-    async (
-      _event,
-      path: unknown,
-      content: unknown,
-      expected: unknown,
-    ): Promise<IpcResult<FileWriteResult>> =>
-      guarded(async () => {
-        const allowedPath = requireAllowedWritePath(path);
-        if (typeof content !== "string") {
-          throw new FileServiceError("invalid-argument", "Markdown 内容无效。");
-        }
-        const expectedFingerprint =
-          expected === undefined ? undefined : (expected as FileFingerprint);
-        const requiredFingerprint = requiredWriteFingerprints.get(allowedPath);
-        if (
-          requiredFingerprint &&
-          (!isFileFingerprint(expectedFingerprint) ||
-            expectedFingerprint.hash !== requiredFingerprint.hash ||
-            expectedFingerprint.mtimeMs !== requiredFingerprint.mtimeMs ||
-            expectedFingerprint.size !== requiredFingerprint.size)
-        ) {
-          throw new FileServiceError(
-            "invalid-fingerprint",
-            "保存前必须提供打开文件时的校验信息。",
+    const canonical = await canonicalize(path);
+    if (!isMarkdownPath(canonical)) {
+      throw new FileServiceError("invalid-path", "Markdown 文件路径无效。");
+    }
+    return canonical;
+  }
+
+  function requireReadGrant(
+    grants: WindowFileGrants,
+    canonicalPath: string,
+  ): void {
+    if (!grants.readPaths.has(canonicalPath)) {
+      throw new FileServiceError(
+        "invalid-path",
+        "此文件尚未通过 MarkDesk 明确打开。",
+      );
+    }
+  }
+
+  function requireWriteGrant(
+    grants: WindowFileGrants,
+    canonicalPath: string,
+  ): void {
+    if (!grants.readPaths.has(canonicalPath) && !grants.writePaths.has(canonicalPath)) {
+      throw new FileServiceError(
+        "invalid-path",
+        "此文件路径未获准保存。",
+      );
+    }
+  }
+
+  function register(): void {
+    if (registered) return;
+    registered = true;
+
+    ipc.handle(
+      markdeskChannels.chooseMarkdownFile,
+      async (event): Promise<IpcResult<string | null>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const selection = await dialogs.showOpenDialog(grants.window, {
+            title: "打开 Markdown",
+            properties: ["openFile"],
+            filters: [
+              { name: "Markdown", extensions: ["md", "markdown"] },
+            ],
+          });
+          const path = selection.filePaths?.[0];
+          if (!path || !isMarkdownPath(path)) return null;
+
+          const canonical = await canonicalMarkdownPath(path);
+          grants.readPaths.add(canonical);
+          return path;
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.chooseSaveLocation,
+      async (
+        event,
+        defaultName: unknown,
+      ): Promise<IpcResult<string | null>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const safeDefaultName = defaultSaveName(defaultName);
+          const selection = await dialogs.showSaveDialog(grants.window, {
+            title: "保存 Markdown",
+            defaultPath: safeDefaultName,
+            filters: [
+              { name: "Markdown", extensions: ["md", "markdown"] },
+            ],
+          });
+          const path = selection.filePath;
+          if (!path || !isMarkdownPath(path)) return null;
+
+          const canonical = await canonicalMarkdownPath(path);
+          grants.writePaths.add(canonical);
+          return path;
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.readFile,
+      async (
+        event,
+        path: unknown,
+      ): Promise<IpcResult<FileReadResult>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const canonical = await canonicalMarkdownPath(path);
+          requireReadGrant(grants, canonical);
+
+          const file = await read(canonical);
+          grants.writePaths.add(canonical);
+          grants.writeBaselines.set(canonical, {
+            hash: file.hash,
+            mtimeMs: file.mtimeMs,
+            size: file.size,
+          });
+          return file;
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.writeFile,
+      async (
+        event,
+        path: unknown,
+        content: unknown,
+        expected: unknown,
+      ): Promise<IpcResult<FileWriteResult>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const canonical = await canonicalMarkdownPath(path);
+          requireWriteGrant(grants, canonical);
+          if (typeof content !== "string") {
+            throw new FileServiceError("invalid-argument", "Markdown 内容无效。");
+          }
+
+          const expectedFingerprint =
+            expected === undefined ? undefined : (expected as FileFingerprint);
+          if (
+            expectedFingerprint !== undefined &&
+            !isFileFingerprint(expectedFingerprint)
+          ) {
+            throw new FileServiceError("invalid-fingerprint", "文件校验信息无效。");
+          }
+
+          const baseline = grants.writeBaselines.get(canonical);
+          if (
+            baseline &&
+            (!isFileFingerprint(expectedFingerprint) ||
+              expectedFingerprint.hash !== baseline.hash ||
+              expectedFingerprint.mtimeMs !== baseline.mtimeMs ||
+              expectedFingerprint.size !== baseline.size)
+          ) {
+            throw new FileServiceError(
+              "invalid-fingerprint",
+              "保存前必须提供打开文件时的校验信息。",
+            );
+          }
+
+          // A save-dialog-only target may be new or intentionally overwritten,
+          // so it does not inherit an unrelated document's expected fingerprint.
+          const serviceExpected = baseline ? expectedFingerprint : undefined;
+          const result = await write(
+            canonical,
+            content,
+            serviceExpected,
           );
-        }
+          grants.writeBaselines.set(canonical, {
+            hash: result.hash,
+            mtimeMs: result.mtimeMs,
+            size: result.size,
+          });
+          return result;
+        }),
+    );
+  }
 
-        const result = await writeMarkdownFile(
-          allowedPath,
-          content,
-        );
-        requiredWriteFingerprints.set(allowedPath, {
-          hash: result.hash,
-          mtimeMs: result.mtimeMs,
-          size: result.size,
+  async function notifyFileChanged(path: string): Promise<void> {
+    const canonical = await canonicalMarkdownPath(path);
+    for (const grants of grantsBySender.values()) {
+      if (grants.readPaths.has(canonical)) {
+        grants.sender.send(markdeskChannels.fileChanged, {
+          path: canonical,
         });
-        return result;
-      }),
-  );
+      }
+    }
+  }
+
+  return { register, notifyFileChanged };
+}
+
+const productionController = createSecureFileIpcController();
+
+export function registerSecureFileIpc(): void {
+  productionController.register();
+}
+
+export async function notifyFileChanged(path: string): Promise<void> {
+  await productionController.notifyFileChanged(path);
 }
 
 const menuCommands = new Set<MenuCommand>([
@@ -228,11 +416,4 @@ export function sendMenuCommand(
   command: MenuCommand,
 ): void {
   window.webContents.send(markdeskChannels.menuCommand, command);
-}
-
-export function notifyFileChanged(path: string): void {
-  if (!isMarkdownPath(path) || !allowedReadPaths.has(path)) return;
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send(markdeskChannels.fileChanged, { path });
-  }
 }

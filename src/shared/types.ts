@@ -66,7 +66,6 @@ export const markdeskChannels = {
 } as const;
 
 export interface MarkDeskRendererApi {
-  platform: NodeJS.Platform;
   chooseMarkdownFile(): Promise<string | null>;
   chooseSaveLocation(defaultName: string): Promise<string | null>;
   readFile(path: string): Promise<FileReadResult>;

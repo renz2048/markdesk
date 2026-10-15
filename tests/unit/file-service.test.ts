@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MAX_MARKDOWN_BYTES,
+  MAX_MARKDOWN_PATH_LENGTH,
   detectNewline,
   fingerprint,
   isMarkdownPath,
@@ -12,76 +14,195 @@ import {
 
 interface MemoryStats {
   mtimeMs: number;
+  size: number;
+  mode: number;
+  dev?: number;
+  ino?: number;
+}
+
+interface MemoryEntry {
+  bytes: Buffer;
+  stats: MemoryStats;
+  symlinkTo?: string;
+}
+
+class MemoryFileHandle {
+  constructor(
+    private readonly entry: MemoryEntry,
+    private readonly fileSystem: MemoryFileSystem,
+  ) {}
+
+  async readFile(): Promise<Buffer> {
+    this.fileSystem.handleReadCalls.push(this.entry);
+    if (this.fileSystem.mutateDuringRead) {
+      this.fileSystem.mutateDuringRead(this.entry);
+    }
+    return Buffer.from(this.entry.bytes);
+  }
+
+  async writeFile(data: string | Buffer): Promise<void> {
+    this.fileSystem.handleWriteCalls.push({ data });
+    if (this.fileSystem.failHandleWrite) {
+      throw new Error("device out of space");
+    }
+    this.entry.bytes = Buffer.isBuffer(data)
+      ? Buffer.from(data)
+      : Buffer.from(data, "utf8");
+    this.entry.stats.size = this.entry.bytes.byteLength;
+    this.entry.stats.mtimeMs = 2;
+  }
+
+  async chmod(mode: number): Promise<void> {
+    this.entry.stats.mode = mode;
+  }
+
+  async sync(): Promise<void> {
+    this.fileSystem.handleSyncCalls.push(this.entry);
+  }
+
+  async stat(): Promise<MemoryStats> {
+    return { ...this.entry.stats };
+  }
+
+  async close(): Promise<void> {
+    this.fileSystem.handleCloseCalls.push(this.entry);
+  }
 }
 
 class MemoryFileSystem {
-  files = new Map<string, Buffer>();
-  stats = new Map<string, MemoryStats>();
-  readFileCalls: string[] = [];
-  writeFileCalls: Array<{ path: string; data: Buffer | string }> = [];
-  writeFileOptions: Array<{ mode?: number } | undefined> = [];
+  entries = new Map<string, MemoryEntry>();
+  openCalls: Array<{ path: string; flags: string; mode?: number }> = [];
+  handleReadCalls: MemoryEntry[] = [];
+  handleWriteCalls: Array<{ data: string | Buffer }> = [];
+  handleSyncCalls: MemoryEntry[] = [];
+  handleCloseCalls: MemoryEntry[] = [];
   renameCalls: Array<{ from: string; to: string }> = [];
   unlinkCalls: string[] = [];
-  failWrite = false;
+  failHandleWrite = false;
   failRename = false;
+  mutateDuringRead: ((entry: MemoryEntry) => void) | null = null;
 
-  async readFile(path: string): Promise<Buffer> {
-    this.readFileCalls.push(path);
-    const file = this.files.get(path);
-    if (!file) {
+  private makeEntry(content: string | Buffer, mode = 0o644): MemoryEntry {
+    const bytes = Buffer.isBuffer(content)
+      ? Buffer.from(content)
+      : Buffer.from(content, "utf8");
+    return {
+      bytes,
+      stats: {
+        mtimeMs: 1,
+        size: bytes.byteLength,
+        mode,
+        dev: 1,
+        ino: 1,
+      },
+    };
+  }
+
+  async open(
+    path: string,
+    flags: "r" | "wx",
+    mode = 0o600,
+  ): Promise<MemoryFileHandle> {
+    this.openCalls.push({ path, flags, mode });
+    const existing = this.entries.get(path);
+
+    if (flags === "wx") {
+      if (existing) {
+        const error = new Error("EEXIST") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      }
+      const entry: MemoryEntry = {
+        bytes: Buffer.alloc(0),
+        stats: { mtimeMs: 1, size: 0, mode, dev: 2, ino: 2 },
+      };
+      this.entries.set(path, entry);
+      return new MemoryFileHandle(entry, this);
+    }
+
+    if (!existing) {
+      const isDirectoryForKnownFile = [...this.entries.keys()].some(
+        (knownPath) => dirname(knownPath) === path,
+      );
+      if (isDirectoryForKnownFile) {
+        const entry = this.makeEntry("", 0o755);
+        this.entries.set(path, entry);
+        return new MemoryFileHandle(entry, this);
+      }
       const error = new Error("ENOENT") as NodeJS.ErrnoException;
       error.code = "ENOENT";
       throw error;
     }
-    return Buffer.from(file);
+    let current = existing;
+    let hops = 0;
+    while (current.symlinkTo) {
+      hops += 1;
+      if (hops > 16) throw new Error("ELOOP");
+      const target = this.entries.get(current.symlinkTo);
+      if (!target) {
+        const error = new Error("ENOENT") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      current = target;
+    }
+    return new MemoryFileHandle(current, this);
   }
 
-  async writeFile(
-    path: string,
-    data: Buffer | string,
-    options?: { mode?: number },
-  ): Promise<void> {
-    this.writeFileCalls.push({ path, data });
-    this.writeFileOptions.push(options);
-    if (this.failWrite) throw new Error("disk unavailable");
-    this.files.set(path, Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8"));
-    this.stats.set(path, { mtimeMs: 1 });
+  async stat(path: string): Promise<MemoryStats> {
+    const entry = this.entries.get(path);
+    if (!entry) {
+      const error = new Error("ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    }
+    let current = entry;
+    let hops = 0;
+    while (current.symlinkTo) {
+      hops += 1;
+      if (hops > 16) throw new Error("ELOOP");
+      const target = this.entries.get(current.symlinkTo);
+      if (!target) {
+        const error = new Error("ENOENT") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      current = target;
+    }
+    return { ...current.stats };
   }
 
   async rename(from: string, to: string): Promise<void> {
     this.renameCalls.push({ from, to });
     if (this.failRename) throw new Error("rename unavailable");
-    const source = this.files.get(from);
+    const source = this.entries.get(from);
     if (!source) {
       const error = new Error("ENOENT") as NodeJS.ErrnoException;
       error.code = "ENOENT";
       throw error;
     }
-    const sourceStats = this.stats.get(from);
-    this.files.set(to, Buffer.from(source));
-    this.files.delete(from);
-    this.stats.set(to, { mtimeMs: sourceStats?.mtimeMs ?? 1 });
-    this.stats.delete(from);
-  }
-
-  async stat(path: string): Promise<{ mtimeMs: number; size: number }> {
-    const file = this.files.get(path);
-    if (!file) {
-      const error = new Error("ENOENT") as NodeJS.ErrnoException;
-      error.code = "ENOENT";
-      throw error;
-    }
-    return {
-      mtimeMs: this.stats.get(path)?.mtimeMs ?? 1,
-      size: file.byteLength,
-    };
+    this.entries.set(to, source);
+    this.entries.delete(from);
   }
 
   async unlink(path: string): Promise<void> {
     this.unlinkCalls.push(path);
-    if (!this.files.has(path)) return;
-    this.files.delete(path);
-    this.stats.delete(path);
+    if (!this.entries.has(path)) return;
+    this.entries.delete(path);
+  }
+
+  addFile(path: string, content: string | Buffer, mode = 0o644) {
+    this.entries.set(path, this.makeEntry(content, mode));
+    return this;
+  }
+
+  addSymlink(path: string, target: string) {
+    this.entries.set(path, {
+      bytes: Buffer.alloc(0),
+      stats: { mtimeMs: 1, size: 0, mode: 0o777, dev: 1, ino: 1 },
+      symlinkTo: target,
+    });
+    return this;
   }
 }
 
@@ -91,16 +212,6 @@ function text(value: string): Buffer {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-async function addFile(
-  fileSystem: MemoryFileSystem,
-  path: string,
-  content: string,
-  mtimeMs = 1,
-): Promise<void> {
-  fileSystem.files.set(path, text(content));
-  fileSystem.stats.set(path, { mtimeMs });
 }
 
 describe("file path validation", () => {
@@ -114,16 +225,23 @@ describe("file path validation", () => {
     (value) => expect(isMarkdownPath(value)).toBe(false),
   );
 
-  it("rejects paths containing control characters", () => {
-    expect(isMarkdownPath("/tmp/a\nb.md")).toBe(false);
-    expect(isMarkdownPath("/tmp/a\0b.md")).toBe(false);
+  it("rejects all C0 and DEL controls and caps path length", () => {
+    for (const character of ["\0", "\u0001", "\r", "\u001f", "\u007f"]) {
+      expect(isMarkdownPath(`/tmp/a${character}b.md`)).toBe(false);
+    }
+    expect(
+      isMarkdownPath(`${"/tmp".padEnd(MAX_MARKDOWN_PATH_LENGTH, "a")}.md`),
+    ).toBe(false);
   });
 });
 
 describe("Markdown decoding", () => {
   it("strips one UTF-8 BOM and reports the newline preference", async () => {
-    const fileSystem = new MemoryFileSystem();
-    await addFile(fileSystem, "/tmp/doc.md", "\uFEFF# Title\r\nBody\r\n", 12.5);
+    const fileSystem = new MemoryFileSystem().addFile(
+      "/tmp/doc.md",
+      "\uFEFF# Title\r\nBody\r\n",
+    );
+    fileSystem.entries.get("/tmp/doc.md")!.stats.mtimeMs = 12.5;
 
     const result = await readMarkdownFile("/tmp/doc.md", fileSystem);
 
@@ -148,36 +266,46 @@ describe("Markdown decoding", () => {
   });
 
   it("rejects invalid UTF-8 with a typed error", async () => {
-    const fileSystem = new MemoryFileSystem();
-    fileSystem.files.set("/tmp/bad.md", Buffer.from([0x23, 0xff]));
-    fileSystem.stats.set("/tmp/bad.md", { mtimeMs: 1 });
+    const fileSystem = new MemoryFileSystem().addFile(
+      "/tmp/bad.md",
+      Buffer.from([0x23, 0xff]),
+    );
 
-    await expect(readMarkdownFile("/tmp/bad.md", fileSystem)).rejects.toMatchObject({
-      code: "invalid-encoding",
-    });
+    await expect(
+      readMarkdownFile("/tmp/bad.md", fileSystem),
+    ).rejects.toMatchObject({ code: "invalid-encoding" });
+  });
+
+  it("uses one opened descriptor and rejects metadata changed during read", async () => {
+    const fileSystem = new MemoryFileSystem().addFile("/tmp/race.md", "# One\n");
+    fileSystem.mutateDuringRead = (entry) => {
+      entry.bytes = text("# External\n");
+      entry.stats.size = entry.bytes.byteLength;
+      entry.stats.mtimeMs = 9;
+      entry.stats.ino = 99;
+    };
+
+    await expect(
+      readMarkdownFile("/tmp/race.md", fileSystem),
+    ).rejects.toMatchObject({ code: "file-changed" });
   });
 });
 
 describe("file size limits", () => {
   it("rejects a file over 10 MiB before reading its contents", async () => {
-    const fileSystem = new MemoryFileSystem();
-    fileSystem.stats.set("/tmp/large.md", { mtimeMs: 1 });
-    fileSystem.files.set(
+    const fileSystem = new MemoryFileSystem().addFile(
       "/tmp/large.md",
       Buffer.alloc(MAX_MARKDOWN_BYTES + 1, 0x61),
     );
 
-    await expect(readMarkdownFile("/tmp/large.md", fileSystem)).rejects.toMatchObject(
-      {
-        code: "file-too-large",
-      },
-    );
-    expect(fileSystem.readFileCalls).toEqual([]);
+    await expect(
+      readMarkdownFile("/tmp/large.md", fileSystem),
+    ).rejects.toMatchObject({ code: "file-too-large" });
+    expect(fileSystem.handleReadCalls).toEqual([]);
   });
 
   it("rejects content that would write over 10 MiB", async () => {
-    const fileSystem = new MemoryFileSystem();
-    await addFile(fileSystem, "/tmp/new.md", "");
+    const fileSystem = new MemoryFileSystem().addFile("/tmp/new.md", "");
 
     await expect(
       writeMarkdownFile(
@@ -187,16 +315,47 @@ describe("file size limits", () => {
         fileSystem,
       ),
     ).rejects.toMatchObject({ code: "file-too-large" });
-    expect(fileSystem.writeFileCalls).toEqual([]);
+    expect(fileSystem.openCalls.filter((call) => call.flags === "wx")).toEqual([]);
+  });
+
+  it("rejects unpaired JavaScript surrogates before write", async () => {
+    const fileSystem = new MemoryFileSystem().addFile("/tmp/surrogate.md", "");
+
+    await expect(
+      writeMarkdownFile("/tmp/surrogate.md", "\uD800", undefined, fileSystem),
+    ).rejects.toMatchObject({ code: "invalid-encoding" });
+    expect(fileSystem.openCalls.filter((call) => call.flags === "wx")).toEqual([]);
   });
 });
 
 describe("fingerprints and collision detection", () => {
-  it("creates a SHA-256 fingerprint from canonical text content", async () => {
-    const fileSystem = new MemoryFileSystem();
-    await addFile(fileSystem, "/tmp/fingerprint.md", "# Same\n", 44);
+  it("supports the public content override and filesystem injection", async () => {
+    const fileSystem = new MemoryFileSystem().addFile(
+      "/tmp/fingerprint.md",
+      "# Disk\r\n",
+      0o600,
+    );
+    fileSystem.entries.get("/tmp/fingerprint.md")!.stats.mtimeMs = 44;
 
-    await expect(fingerprint("/tmp/fingerprint.md", fileSystem)).resolves.toEqual({
+    await expect(
+      fingerprint("/tmp/fingerprint.md", "# Supplied\n", fileSystem),
+    ).resolves.toEqual({
+      hash: sha256("# Supplied\n"),
+      mtimeMs: 44,
+      size: Buffer.byteLength("# Supplied\n", "utf8"),
+    });
+  });
+
+  it("creates a SHA-256 fingerprint from actual canonical text by default", async () => {
+    const fileSystem = new MemoryFileSystem().addFile(
+      "/tmp/fingerprint.md",
+      "\uFEFF# Same\n",
+    );
+    fileSystem.entries.get("/tmp/fingerprint.md")!.stats.mtimeMs = 44;
+
+    await expect(
+      fingerprint("/tmp/fingerprint.md", fileSystem),
+    ).resolves.toEqual({
       hash: sha256("# Same\n"),
       mtimeMs: 44,
       size: Buffer.byteLength("# Same\n", "utf8"),
@@ -204,106 +363,148 @@ describe("fingerprints and collision detection", () => {
   });
 
   it("rejects a save when disk content changed after open", async () => {
-    const fileSystem = new MemoryFileSystem();
-    const path = "/tmp/changed.md";
-    await addFile(fileSystem, path, "# Opened\n", 10);
-    const expected = await fingerprint(path, fileSystem);
-    await addFile(fileSystem, path, "# Externally changed\n", 11);
-
-    await expect(
-      writeMarkdownFile(path, "# Local\n", expected, fileSystem),
-    ).rejects.toMatchObject({ code: "file-changed" });
-    expect(fileSystem.writeFileCalls).toEqual([]);
-    expect(fileSystem.renameCalls).toEqual([]);
-    expect(fileSystem.files.get(path)?.toString("utf8")).toBe(
-      "# Externally changed\n",
+    const fileSystem = new MemoryFileSystem().addFile(
+      "/tmp/changed.md",
+      "# Opened\n",
     );
-  });
-
-  it("rejects a save when only the expected mtime changed", async () => {
-    const fileSystem = new MemoryFileSystem();
-    const path = "/tmp/touched.md";
-    await addFile(fileSystem, path, "# Same\n", 10);
-    const expected = await fingerprint(path, fileSystem);
-    fileSystem.stats.set(path, { mtimeMs: 11 });
+    const expected = await fingerprint("/tmp/changed.md", fileSystem);
+    const entry = fileSystem.entries.get("/tmp/changed.md")!;
+    entry.bytes = text("# Externally changed\n");
+    entry.stats = {
+      ...entry.stats,
+      size: Buffer.byteLength("# Externally changed\n"),
+      mtimeMs: 11,
+    };
 
     await expect(
-      writeMarkdownFile(path, "# Local\n", expected, fileSystem),
+      writeMarkdownFile("/tmp/changed.md", "# Local\n", expected, fileSystem),
     ).rejects.toMatchObject({ code: "file-changed" });
-    expect(fileSystem.files.get(path)?.toString("utf8")).toBe("# Same\n");
+    expect(fileSystem.openCalls.filter((call) => call.flags === "wx")).toEqual([]);
+    expect(fileSystem.renameCalls).toEqual([]);
+    expect(entry.bytes.toString("utf8")).toBe("# Externally changed\n");
   });
 
-  it("rejects malformed expected fingerprints before touching the disk", async () => {
+  it("treats an I/O failure while checking expected state as read failure", async () => {
     const fileSystem = new MemoryFileSystem();
-    await addFile(fileSystem, "/tmp/guard.md", "# Guard\n");
+    const expected = { hash: "a".repeat(64), mtimeMs: 1, size: 1 };
 
     await expect(
-      writeMarkdownFile(
-        "/tmp/guard.md",
-        "# Local\n",
-        { hash: "nope", mtimeMs: 1, size: 1 },
-        fileSystem,
-      ),
-    ).rejects.toMatchObject({ code: "invalid-fingerprint" });
-    expect(fileSystem.writeFileCalls).toEqual([]);
-    expect(fileSystem.renameCalls).toEqual([]);
+      writeMarkdownFile("/tmp/missing.md", "# Local\n", expected, fileSystem),
+    ).rejects.toMatchObject({ code: "read-failed" });
+    expect(fileSystem.openCalls.filter((call) => call.flags === "wx")).toEqual([]);
   });
 });
 
 describe("atomic Markdown writes", () => {
-  it("writes a private temporary file and renames it over the target", async () => {
-    const fileSystem = new MemoryFileSystem();
-    const path = "/tmp/atomic.md";
-    const expected = {
-      hash: sha256("# Old\n"),
-      mtimeMs: 5,
-      size: Buffer.byteLength("# Old\n", "utf8"),
-    };
-    await addFile(fileSystem, path, "# Old\n", 5);
+  it("creates an exclusive temp, preserves mode, syncs, and renames", async () => {
+    const fileSystem = new MemoryFileSystem().addFile(
+      "/tmp/atomic.md",
+      "# Old\n",
+      0o640,
+    );
+    const expected = await fingerprint("/tmp/atomic.md", fileSystem);
     const content = normalizeNewline("# New\r\nSaved\n", "crlf");
 
-    const result = await writeMarkdownFile(path, content, expected, fileSystem);
+    const result = await writeMarkdownFile(
+      "/tmp/atomic.md",
+      content,
+      expected,
+      fileSystem,
+    );
 
-    expect(fileSystem.writeFileCalls).toEqual([
-      { path: `${path}.markdesk-tmp`, data: content },
+    const tempPath = "/tmp/atomic.md.markdesk-tmp";
+    expect(fileSystem.openCalls).toEqual([
+      { path: "/tmp/atomic.md", flags: "r" },
+      { path: tempPath, flags: "wx", mode: 0o600 },
+      { path: dirname("/tmp/atomic.md"), flags: "r", mode: 0o600 },
     ]);
-    expect(fileSystem.writeFileOptions).toEqual([{ mode: 0o600 }]);
+    expect(fileSystem.handleSyncCalls.length).toBeGreaterThanOrEqual(2);
     expect(fileSystem.renameCalls).toEqual([
-      { from: `${path}.markdesk-tmp`, to: path },
+      { from: tempPath, to: "/tmp/atomic.md" },
     ]);
-    expect(fileSystem.files.get(path)?.toString("utf8")).toBe(content);
-    expect(fileSystem.files.has(`${path}.markdesk-tmp`)).toBe(false);
+    expect(
+      fileSystem.entries.get("/tmp/atomic.md")!.bytes.toString(),
+    ).toBe(content);
+    expect(fileSystem.entries.get("/tmp/atomic.md")!.stats.mode).toBe(0o640);
+    expect(fileSystem.entries.has(tempPath)).toBe(false);
     expect(result).toEqual({
-      path,
+      path: "/tmp/atomic.md",
       hash: sha256(content),
-      mtimeMs: 1,
+      mtimeMs: 2,
       size: Buffer.byteLength(content, "utf8"),
     });
   });
 
-  it("removes the temporary file when writing fails", async () => {
+  it("creates new targets with private mode 0600", async () => {
     const fileSystem = new MemoryFileSystem();
-    await addFile(fileSystem, "/tmp/write-failure.md", "# Old\n");
-    fileSystem.failWrite = true;
 
-    await expect(
-      writeMarkdownFile("/tmp/write-failure.md", "# New\n", undefined, fileSystem),
-    ).rejects.toMatchObject({ code: "write-failed" });
-    expect(fileSystem.unlinkCalls).toEqual([
-      "/tmp/write-failure.md.markdesk-tmp",
-    ]);
+    await writeMarkdownFile("/tmp/new.md", "# New\n", undefined, fileSystem);
+
+    expect(fileSystem.entries.get("/tmp/new.md")!.stats.mode).toBe(0o600);
   });
 
-  it("removes the temporary file when rename fails and keeps the target", async () => {
-    const fileSystem = new MemoryFileSystem();
-    const path = "/tmp/rename-failure.md";
-    await addFile(fileSystem, path, "# Old\n");
+  it("does not overwrite or unlink a pre-existing regular temporary file", async () => {
+    const fileSystem = new MemoryFileSystem().addFile("/tmp/a.md", "# Old\n");
+    fileSystem.addFile("/tmp/a.md.markdesk-tmp", "# Not ours\n", 0o644);
+
+    await expect(
+      writeMarkdownFile("/tmp/a.md", "# New\n", undefined, fileSystem),
+    ).rejects.toMatchObject({ code: "write-failed" });
+
+    expect(fileSystem.unlinkCalls).toEqual([]);
+    expect(
+      fileSystem.entries.get("/tmp/a.md.markdesk-tmp")!.bytes.toString(),
+    ).toBe("# Not ours\n");
+  });
+
+  it("does not follow or unlink a dangling temporary symlink", async () => {
+    const fileSystem = new MemoryFileSystem().addFile("/tmp/a.md", "# Old\n");
+    fileSystem.addSymlink("/tmp/a.md.markdesk-tmp", "/tmp/missing-target");
+
+    await expect(
+      writeMarkdownFile("/tmp/a.md", "# New\n", undefined, fileSystem),
+    ).rejects.toMatchObject({ code: "write-failed" });
+
+    expect(fileSystem.unlinkCalls).toEqual([]);
+    expect(fileSystem.entries.has("/tmp/a.md.markdesk-tmp")).toBe(true);
+    expect(fileSystem.entries.get("/tmp/a.md")!.bytes.toString()).toBe("# Old\n");
+  });
+
+  it("does not follow or unlink a temporary symlink to another file", async () => {
+    const fileSystem = new MemoryFileSystem()
+      .addFile("/tmp/a.md", "# Old\n")
+      .addFile("/tmp/victim.md", "# Victim\n");
+    fileSystem.addSymlink("/tmp/a.md.markdesk-tmp", "/tmp/victim.md");
+
+    await expect(
+      writeMarkdownFile("/tmp/a.md", "# New\n", undefined, fileSystem),
+    ).rejects.toMatchObject({ code: "write-failed" });
+
+    expect(fileSystem.unlinkCalls).toEqual([]);
+    expect(fileSystem.entries.get("/tmp/victim.md")!.bytes.toString()).toBe(
+      "# Victim\n",
+    );
+  });
+
+  it("cleans an exclusively created temporary after handle write failure", async () => {
+    const fileSystem = new MemoryFileSystem().addFile("/tmp/a.md", "# Old\n");
+    fileSystem.failHandleWrite = true;
+
+    await expect(
+      writeMarkdownFile("/tmp/a.md", "# New\n", undefined, fileSystem),
+    ).rejects.toMatchObject({ code: "write-failed" });
+    expect(fileSystem.unlinkCalls).toEqual(["/tmp/a.md.markdesk-tmp"]);
+    expect(fileSystem.entries.get("/tmp/a.md")!.bytes.toString()).toBe("# Old\n");
+  });
+
+  it("cleans an exclusively created temporary after rename failure", async () => {
+    const fileSystem = new MemoryFileSystem().addFile("/tmp/a.md", "# Old\n");
     fileSystem.failRename = true;
 
     await expect(
-      writeMarkdownFile(path, "# New\n", undefined, fileSystem),
+      writeMarkdownFile("/tmp/a.md", "# New\n", undefined, fileSystem),
     ).rejects.toMatchObject({ code: "write-failed" });
-    expect(fileSystem.unlinkCalls).toEqual([`${path}.markdesk-tmp`]);
-    expect(fileSystem.files.get(path)?.toString("utf8")).toBe("# Old\n");
+    expect(fileSystem.unlinkCalls).toEqual(["/tmp/a.md.markdesk-tmp"]);
+    expect(fileSystem.entries.get("/tmp/a.md")!.bytes.toString()).toBe("# Old\n");
   });
 });

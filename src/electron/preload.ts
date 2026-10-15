@@ -31,7 +31,6 @@ async function invokeResult<TValue>(
 }
 
 const rendererApi: MarkDeskRendererApi = {
-  platform: process.platform,
   chooseMarkdownFile: () =>
     invokeResult<string | null>(markdeskChannels.chooseMarkdownFile),
   chooseSaveLocation: (defaultName: string) =>

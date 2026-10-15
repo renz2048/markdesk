@@ -3,6 +3,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { EditorView } from "prosemirror-view";
@@ -26,8 +27,13 @@ import {
   type EditorMode,
   type ThemePreference,
 } from "./state/documentStore";
+import {
+  FileLifecycleController,
+  toFileActionError,
+} from "./fileLifecycle";
 import type {
   FileFingerprint,
+  FileWriteResult,
   MenuCommand,
   NewlinePreference,
 } from "../shared/types";
@@ -45,11 +51,6 @@ const themeLabels: Record<ThemePreference, string> = {
   system: "跟随系统",
 };
 
-interface FileActionError {
-  code: string;
-  message: string;
-}
-
 function normalizeForSave(
   content: string,
   newline: NewlinePreference,
@@ -62,27 +63,6 @@ function normalizeForSave(
 
 function fileNameFromPath(path: string): string {
   return path.split(/[\\/]/u).filter(Boolean).at(-1) ?? "未命名.md";
-}
-
-function fileActionError(error: unknown): FileActionError {
-  const code =
-    typeof error === "object" && error !== null && "code" in error
-      ? String((error as { code?: unknown }).code)
-      : "unexpected-error";
-
-  const messages: Record<string, string> = {
-    "file-changed": "文件已被其他程序修改，请重新打开后再保存。",
-    "file-too-large": "文件或内容超过 10 MiB 限制。",
-    "invalid-path": "Markdown 文件路径未获授权或无效。",
-    "invalid-encoding": "文件不是有效的 UTF-8 Markdown。",
-    parse: "Markdown 解析失败，无法打开文件。",
-    serialize: "Markdown 序列化失败，无法保存文件。",
-  };
-
-  return {
-    code,
-    message: messages[code] ?? "文件操作失败，请稍后重试。",
-  };
 }
 
 export default function App() {
@@ -104,6 +84,7 @@ export default function App() {
   const setThemePreference = useDocumentStore(
     (state) => state.setThemePreference,
   );
+  const lifecycleRef = useRef(new FileLifecycleController());
   const api = typeof window === "undefined" ? undefined : window.markdesk;
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [selectionPosition, setSelectionPosition] = useState(0);
@@ -113,8 +94,9 @@ export default function App() {
   const [newlinePreference, setNewlinePreference] =
     useState<NewlinePreference>("lf");
   const [fileBusy, setFileBusy] = useState(false);
-  const [fileActionError, setFileActionError] =
-    useState<FileActionError | null>(null);
+  const [fileActionError, setFileActionError] = useState<
+    ReturnType<typeof toFileActionError> | null
+  >(null);
 
   useEffect(() => {
     setSelectionPosition(0);
@@ -172,30 +154,44 @@ export default function App() {
   );
 
   const newDocument = useCallback(() => {
-    useDocumentStore
-      .getState()
-      .replaceDocument({
+    if (lifecycleRef.current.beginOperation() === null) return;
+
+    setFileBusy(true);
+    setFileActionError(null);
+    try {
+      useDocumentStore.getState().replaceDocument({
         doc: parseMarkdown(""),
         filePath: null,
         fileName: "未命名.md",
         dirty: false,
       });
-    setFileFingerprint(null);
-    setNewlinePreference("lf");
-    setFileActionError(null);
+      setFileFingerprint(null);
+      setNewlinePreference("lf");
+    } finally {
+      lifecycleRef.current.endOperation();
+      setFileBusy(false);
+    }
   }, []);
 
   const openDocument = useCallback(async () => {
-    if (!api || fileBusy) return;
+    if (lifecycleRef.current.beginOperation() === null) return;
 
     setFileBusy(true);
     setFileActionError(null);
     try {
-      const path = await api.chooseMarkdownFile();
+      const path = await api?.chooseMarkdownFile();
       if (!path) return;
 
-      const file = await api.readFile(path);
-      const doc = parseMarkdown(file.content);
+      const file = await api?.readFile(path);
+      if (!file) return;
+
+      let doc: ReturnType<typeof parseMarkdown>;
+      try {
+        doc = parseMarkdown(file.content);
+      } catch (error) {
+        setFileActionError(toFileActionError(error, "parse"));
+        return;
+      }
       useDocumentStore.getState().replaceDocument({
         doc,
         filePath: file.path,
@@ -209,28 +205,45 @@ export default function App() {
       });
       setNewlinePreference(file.newline);
     } catch (error) {
-      setFileActionError(fileActionError(error));
+      setFileActionError(toFileActionError(error));
     } finally {
+      lifecycleRef.current.endOperation();
       setFileBusy(false);
     }
-  }, [api, fileBusy]);
+  }, [api]);
 
   const persistCurrentDocument = useCallback(
     async (
       path: string,
       expected: FileFingerprint | undefined,
+      revision: number,
     ): Promise<void> => {
       const state = useDocumentStore.getState();
-      const source =
-        state.mode === "source"
-          ? state.sourceText
-          : serializeMarkdown(state.doc);
+      let source: string;
+      try {
+        source =
+          state.mode === "source"
+            ? state.sourceText
+            : serializeMarkdown(state.doc);
+      } catch (error) {
+        setFileActionError(toFileActionError(error, "serialize"));
+        return;
+      }
+
       const content = normalizeForSave(source, newlinePreference);
-      const result = await api?.writeFile(path, content, expected);
-      if (!result) throw new Error("MarkDesk IPC 不可用。");
+      let result: FileWriteResult | undefined;
+      try {
+        result = await api?.writeFile(path, content, expected);
+      } catch (error) {
+        setFileActionError(toFileActionError(error));
+        return;
+      }
+      if (!result) return;
 
       state.saveAs(result.path, fileNameFromPath(result.path));
-      state.markSaved();
+      if (lifecycleRef.current.isCurrent(revision)) {
+        state.markSaved();
+      }
       setFileFingerprint({
         hash: result.hash,
         mtimeMs: result.mtimeMs,
@@ -244,50 +257,80 @@ export default function App() {
   );
 
   const saveDocument = useCallback(async () => {
-    if (!api || fileBusy) return;
+    const revision = lifecycleRef.current.beginOperation();
+    if (revision === null) return;
 
     setFileBusy(true);
     setFileActionError(null);
     try {
       const state = useDocumentStore.getState();
       if (!state.filePath) {
-        const path = await api.chooseSaveLocation(state.fileName);
+        const path = await api?.chooseSaveLocation(state.fileName);
         if (!path) return;
-        await persistCurrentDocument(path, undefined);
+        await persistCurrentDocument(
+          path,
+          fileFingerprint ?? undefined,
+          revision,
+        );
         return;
       }
 
-      await persistCurrentDocument(state.filePath, fileFingerprint ?? undefined);
+      await persistCurrentDocument(
+        state.filePath,
+        fileFingerprint ?? undefined,
+        revision,
+      );
     } catch (error) {
-      setFileActionError(fileActionError(error));
+      setFileActionError(toFileActionError(error));
     } finally {
+      lifecycleRef.current.endOperation();
       setFileBusy(false);
     }
-  }, [api, fileBusy, fileFingerprint, persistCurrentDocument]);
+  }, [api, fileFingerprint, persistCurrentDocument]);
+
+  const handleDocumentChange = useCallback(
+    (nextDoc: Parameters<typeof setDocument>[0]) => {
+      lifecycleRef.current.markEdited();
+      setDocument(nextDoc);
+    },
+    [setDocument],
+  );
+
+  const handleSourceChange = useCallback(
+    (nextSource: string) => {
+      lifecycleRef.current.markEdited();
+      setSourceText(nextSource);
+    },
+    [setSourceText],
+  );
 
   const saveDocumentAs = useCallback(async () => {
-    if (!api || fileBusy) return;
+    const revision = lifecycleRef.current.beginOperation();
+    if (revision === null) return;
 
     setFileBusy(true);
     setFileActionError(null);
     try {
       const state = useDocumentStore.getState();
-      const path = await api.chooseSaveLocation(state.fileName);
+      const path = await api?.chooseSaveLocation(state.fileName);
       if (!path) return;
 
       await persistCurrentDocument(
         path,
-        path === state.filePath ? fileFingerprint ?? undefined : undefined,
+        fileFingerprint ?? undefined,
+        revision,
       );
     } catch (error) {
-      setFileActionError(fileActionError(error));
+      setFileActionError(toFileActionError(error));
     } finally {
+      lifecycleRef.current.endOperation();
       setFileBusy(false);
     }
-  }, [api, fileBusy, fileFingerprint, persistCurrentDocument]);
+  }, [api, fileFingerprint, persistCurrentDocument]);
 
   const handleMenuCommand = useCallback(
     (command: MenuCommand) => {
+      if (lifecycleRef.current.busy) return;
       if (command === "new") newDocument();
       else if (command === "open") void openDocument();
       else if (command === "save") void saveDocument();
@@ -371,13 +414,13 @@ export default function App() {
                   <WysiwygEditor
                     initialDoc={doc}
                     sessionKey={sessionKey}
-                    onChange={setDocument}
+                    onChange={handleDocumentChange}
                   />
                 ) : mode === "source" ? (
                   <SourceEditor
                     initialValue={sourceText}
                     sessionKey={sessionKey}
-                    onChange={setSourceText}
+                    onChange={handleSourceChange}
                   />
                 ) : (
                   <ReadView doc={doc} />
