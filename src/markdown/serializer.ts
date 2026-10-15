@@ -141,7 +141,22 @@ function tableAlignment(value: unknown): TableAlignment {
   return value === "center" || value === "right" ? value : "left";
 }
 
+function containsHardBreak(cell: Node): boolean {
+  for (let index = 0; index < cell.childCount; index += 1) {
+    if (cell.child(index).type === markdownSchema.nodes.hard_break) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function tableCellMarkdown(cell: Node): string {
+  // Markdown table cells cannot contain physical newlines. Fail closed rather
+  // than emit a row that silently changes document structure when reparsed.
+  if (containsHardBreak(cell)) {
+    throw new RangeError("Table cells cannot contain hard breaks");
+  }
+
   const paragraph = markdownSchema.nodes.paragraph.createAndFill(
     {},
     cell.content,
@@ -157,6 +172,97 @@ function escapeTableCell(value: string): string {
   return value.replace(/\|/g, "\\|");
 }
 
+const zeroWidthCharacter = /^[\u200B\u200C\u200D\u2060\uFE00\uFE0F]$/u;
+const combiningCharacter = /^\p{M}$/u;
+const regionalIndicator = /^[\u{1F1E6}-\u{1F1FF}]$/u;
+const extendedPictographic = /^\p{Extended_Pictographic}$/u;
+
+function isWideCodePoint(codePoint: number): boolean {
+  return (
+    extendedPictographic.test(String.fromCodePoint(codePoint)) ||
+    (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+    (codePoint >= 0x2329 && codePoint <= 0x232a) ||
+    (codePoint >= 0x2e80 && codePoint <= 0x303e) ||
+    (codePoint >= 0x3041 && codePoint <= 0x33ff) ||
+    (codePoint >= 0x3400 && codePoint <= 0x4dbf) ||
+    (codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
+    (codePoint >= 0xa000 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xa960 && codePoint <= 0xa97f) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+    (codePoint >= 0x1f680 && codePoint <= 0x1f6ff) ||
+    (codePoint >= 0x1f7e0 && codePoint <= 0x1f7eb) ||
+    (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+    (codePoint >= 0x1fa70 && codePoint <= 0x1faff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x2fffd) ||
+    (codePoint >= 0x30000 && codePoint <= 0x3fffd)
+  );
+}
+
+function characterDisplayWidth(character: string): number {
+  const codePoint = character.codePointAt(0);
+  if (codePoint === undefined) return 0;
+  if (zeroWidthCharacter.test(character) || combiningCharacter.test(character)) {
+    return 0;
+  }
+  return isWideCodePoint(codePoint) ? 2 : 1;
+}
+
+function displayWidth(value: string): number {
+  const characters = Array.from(value);
+  let width = 0;
+  let index = 0;
+
+  while (index < characters.length) {
+    if (regionalIndicator.test(characters[index])) {
+      const isFlagPair =
+        index + 1 < characters.length &&
+        regionalIndicator.test(characters[index + 1]);
+      width += isFlagPair ? 2 : 1;
+      index += isFlagPair ? 2 : 1;
+      continue;
+    }
+
+    let clusterWidth = characterDisplayWidth(characters[index]);
+    index += 1;
+
+    // Absorb combining marks and emoji modifiers into their base cluster.
+    while (
+      index < characters.length &&
+      (combiningCharacter.test(characters[index]) ||
+        (zeroWidthCharacter.test(characters[index]) &&
+          characters[index] !== "\u200D") ||
+        (characters[index].codePointAt(0) ?? 0) >= 0x1f3fb &&
+          (characters[index].codePointAt(0) ?? 0) <= 0x1f3ff)
+    ) {
+      if (characters[index] === "\u20E3") clusterWidth = 2;
+      index += 1;
+    }
+
+    // A ZWJ emoji sequence renders as one grapheme, not the sum of its parts.
+    if (characters[index] === "\u200D" && index + 1 < characters.length) {
+      index += 2;
+      clusterWidth = Math.max(clusterWidth, 2);
+      while (
+        index < characters.length &&
+        (combiningCharacter.test(characters[index]) ||
+          zeroWidthCharacter.test(characters[index]))
+      ) {
+        index += 1;
+      }
+    }
+
+    width += clusterWidth;
+  }
+
+  return width;
+}
+
 function alignmentMarker(alignment: TableAlignment): string {
   if (alignment === "center") return ":---:";
   if (alignment === "right") return "---:";
@@ -168,7 +274,7 @@ function padTableCell(
   width: number,
   alignment: TableAlignment,
 ): string {
-  const padding = " ".repeat(Math.max(0, width - value.length));
+  const padding = " ".repeat(Math.max(0, width - displayWidth(value)));
   if (alignment === "right") return `${padding}${value}`;
   if (alignment === "center") {
     const left = " ".repeat(Math.floor(padding.length / 2));
@@ -210,7 +316,9 @@ function tableMarkdown(table: Node): string {
   for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
     widths[columnIndex] = Math.max(
       alignmentMarker(tableAlignment(alignments[columnIndex] ?? "left")).length,
-      ...rows.map((cells) => cells[columnIndex]?.content.length ?? 0),
+      ...rows.map(
+        (cells) => displayWidth(cells[columnIndex]?.content ?? ""),
+      ),
     );
   }
 

@@ -17,6 +17,10 @@ function tableDocument(source: string) {
 }
 
 describe("complex Markdown", () => {
+  it("imports and initializes the parser with valid markdown-it rules", () => {
+    expect(parseMarkdown("").childCount).toBe(0);
+  });
+
   it("round-trips a table with alignment", () => {
     const source = [
       "| A | B |",
@@ -105,6 +109,51 @@ describe("complex Markdown", () => {
     expect(serializeMarkdown(parseMarkdown(once))).toBe(once);
   });
 
+  it("uses Unicode display width for CJK, emoji, and combining marks", () => {
+    const combiningAcute = "e\u0301";
+    const source = [
+      "| A |",
+      "| --- |",
+      "| 中文 |",
+      "| 👍 |",
+      `| ${combiningAcute} |`,
+      "",
+    ].join("\n");
+    const expected = [
+      "| A    |",
+      "| :--- |",
+      "| 中文 |",
+      "| 👍   |",
+      `| ${combiningAcute}    |`,
+      "",
+    ].join("\n");
+
+    expect(serializeMarkdown(parseMarkdown(source))).toBe(expected);
+    const once = serializeMarkdown(parseMarkdown(expected));
+    expect(once).toBe(expected);
+    expect(serializeMarkdown(parseMarkdown(once))).toBe(once);
+  });
+
+  it("rejects hard breaks in table cells instead of emitting a broken row", () => {
+    const cell = markdownSchema.nodes.table_cell.createAndFill({}, [
+      markdownSchema.text("before"),
+      markdownSchema.nodes.hard_break.create(),
+      markdownSchema.text("after"),
+    ]);
+    if (!cell) throw new Error("expected a valid table cell");
+
+    const row = markdownSchema.nodes.table_row.createAndFill({}, cell);
+    if (!row) throw new Error("expected a valid table row");
+
+    const table = markdownSchema.nodes.table.createAndFill({}, row);
+    if (!table) throw new Error("expected a valid table");
+
+    const doc = markdownSchema.nodes.doc.createAndFill({}, table);
+    if (!doc) throw new Error("expected a valid document");
+
+    expect(() => serializeMarkdown(doc)).toThrow(RangeError);
+  });
+
   it("separates task state from ordinary list-item state", () => {
     const source = "- [ ] unfinished\n- ordinary\n";
     const list = parseMarkdown(source).child(0);
@@ -114,6 +163,18 @@ describe("complex Markdown", () => {
     expect(list.child(1).child(0).textContent).toBe("ordinary");
     expect(serializeMarkdown(list)).toBe(source);
     expect(serializeMarkdown(parseMarkdown(source))).toBe(source);
+  });
+
+  it("round-trips nested task lists with exact indentation", () => {
+    const source = "- [ ] outer\n  - [x] inner\n";
+    const outerItem = parseMarkdown(source).child(0).child(0);
+    const innerItem = outerItem.child(1).child(0);
+    expect(outerItem.attrs.task).toBe("todo");
+    expect(innerItem.attrs.task).toBe("done");
+
+    const once = serializeMarkdown(parseMarkdown(source));
+    expect(once).toBe(source);
+    expect(serializeMarkdown(parseMarkdown(once))).toBe(once);
   });
 
   it("preserves HTML comments as raw blocks", () => {
@@ -133,6 +194,28 @@ describe("complex Markdown", () => {
     expect(serializeMarkdown(parseMarkdown(source))).toBe(source);
   });
 
+  it("preserves adjacent HTML comments as separate raw blocks", () => {
+    const source = "<!-- first -->\n\n<!-- second -->\n";
+    const doc = parseMarkdown(source);
+    expect(doc.childCount).toBe(2);
+    expect(doc.child(0).type).toBe(markdownSchema.nodes.raw_block);
+    expect(doc.child(0).attrs.source).toBe("<!-- first -->");
+    expect(doc.child(1).type).toBe(markdownSchema.nodes.raw_block);
+    expect(doc.child(1).attrs.source).toBe("<!-- second -->");
+    expect(serializeMarkdown(doc)).toBe(source);
+    expect(serializeMarkdown(parseMarkdown(source))).toBe(source);
+  });
+
+  it("keeps inline HTML disabled when block HTML is enabled", () => {
+    const source = "Inline <em>not markup</em> stays text\n";
+    const paragraph = parseMarkdown(source).child(0);
+    expect(paragraph.type).toBe(markdownSchema.nodes.paragraph);
+    expect(paragraph.textContent).toBe(
+      "Inline <em>not markup</em> stays text",
+    );
+    expect(paragraph.child(0).marks).toHaveLength(0);
+  });
+
   it("provides typed protected-raw helpers", () => {
     const rawBlock = rawBlockFromSource("<!-- helper -->");
     expect(rawBlock.type).toBe(markdownSchema.nodes.raw_block);
@@ -140,6 +223,13 @@ describe("complex Markdown", () => {
     expect(() => rawBlockSource(markdownSchema.nodes.paragraph.create())).toThrow(
       TypeError,
     );
+  });
+
+  it("keeps helper raw sources intact, including internal blank lines", () => {
+    const source = "<!-- first\n\nsecond\r\nthird -->";
+    const rawBlock = rawBlockFromSource(source);
+    expect(rawBlockSource(rawBlock)).toBe(source);
+    expect(rawBlock.attrs.source).toBe(source);
   });
 
   it("is idempotent for a representative document", () => {

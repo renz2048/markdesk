@@ -73,7 +73,11 @@ function unwrapTableSections(state: MarkdownCoreState) {
   });
 }
 
-const markdownIt = MarkdownIt("zero", { html: false }).enable([
+function rawBlockSourceFromToken(content: string): string {
+  return content.endsWith("\n") ? content.slice(0, -1) : content;
+}
+
+const markdownIt = MarkdownIt("zero", { html: true }).enable([
   "table",
   "strikethrough",
   "blockquote",
@@ -95,15 +99,15 @@ const markdownIt = MarkdownIt("zero", { html: false }).enable([
   "entity",
   "text",
   "balance_pairs",
-  "text_collapse",
-]);
+  "text_join",
+  ]);
 
 markdownIt.core.ruler.after("block", "markdesk_tables", unwrapTableSections);
 
 const taskMarkdownIt = markdownIt.use(taskLists, {
   enabled: false,
   label: true,
-});
+}).disable("html_inline");
 // Insert before the task-list renderer plugin's own inline transformation so
 // MarkDesk can move the source marker into list_item.attrs without depending
 // on plugin-specific checkbox token shapes.
@@ -170,9 +174,7 @@ export const markdownParser = new MarkdownParser(markdownSchema, taskMarkdownIt,
   html_block: {
     node: "raw_block",
     getAttrs(token) {
-      return {
-        source: token.content.replace(/\r\n?/g, "\n").replace(/\n$/, ""),
-      };
+      return { source: rawBlockSourceFromToken(token.content) };
     },
   },
   image: {
