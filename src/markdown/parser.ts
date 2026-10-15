@@ -3,6 +3,19 @@ import taskLists from "markdown-it-task-lists";
 import { MarkdownParser } from "prosemirror-markdown";
 import { markdownSchema } from "./schema";
 
+interface MarkdownTextToken {
+  content: string;
+  children?: readonly MarkdownTextToken[] | null;
+}
+
+function flattenImageAlt(tokens: readonly MarkdownTextToken[] | null | undefined): string {
+  if (!tokens) return "";
+  return tokens.reduce(
+    (alt, token) => alt + (token.children?.length ? flattenImageAlt(token.children) : token.content),
+    "",
+  );
+}
+
 const markdownIt = MarkdownIt("zero", { html: false })
   .enable([
     "table",
@@ -21,6 +34,8 @@ const markdownIt = MarkdownIt("zero", { html: false })
     "emphasis",
     "link",
     "image",
+    "autolink",
+    "entity",
     "text",
     "balance_pairs",
     "text_collapse",
@@ -60,7 +75,7 @@ export const markdownParser = new MarkdownParser(markdownSchema, markdownIt, {
     getAttrs(token) {
       return {
         src: token.attrGet("src") ?? "",
-        alt: token.children?.[0]?.content ?? "",
+        alt: flattenImageAlt(token.children),
         title: token.attrGet("title"),
       };
     },

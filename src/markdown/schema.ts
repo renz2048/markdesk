@@ -88,8 +88,8 @@ export const markdownSchema = new Schema({
           "img",
           {
             src: node.attrs.src,
-            alt: node.attrs.alt || null,
-            title: node.attrs.title || null,
+            alt: node.attrs.alt ?? "",
+            title: node.attrs.title ?? null,
           },
         ];
       },
@@ -131,7 +131,7 @@ export const markdownSchema = new Schema({
       toDOM(mark) {
         return [
           "a",
-          { href: mark.attrs.href, title: mark.attrs.title || null },
+          { href: mark.attrs.href, title: mark.attrs.title ?? null },
           0,
         ];
       },
