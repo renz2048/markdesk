@@ -1,0 +1,10 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--background, #ffffff);
+  color: var(--foreground, #172033);
+}
