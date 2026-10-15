@@ -50,4 +50,16 @@ describe("outline", () => {
     expect(items[1].props.className).toContain("active");
     expect(items[0].props["aria-current"]).toBeUndefined();
   });
+
+  it("disables heading jumps in modes without an editor view", () => {
+    const panel = OutlinePanel({
+      doc: parseMarkdown("# First"),
+      onJump: () => undefined,
+      disabled: true,
+    });
+    const items = panel.props.children as Array<{
+      props: { disabled?: boolean };
+    }>;
+    expect(items[0].props.disabled).toBe(true);
+  });
 });

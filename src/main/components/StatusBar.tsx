@@ -21,7 +21,9 @@ export function StatusBar({
       <span aria-live="polite" data-testid="document-dirty-status">
         {dirty ? "未保存" : "已保存"}
       </span>
-      <span data-testid="editor-mode">{labels[mode]}</span>
+      <span aria-live="polite" data-testid="editor-mode">
+        {labels[mode]}
+      </span>
     </footer>
   );
 }

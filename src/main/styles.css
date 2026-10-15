@@ -100,6 +100,13 @@ body {
   background: var(--outline-hover);
 }
 
+.outline-item:disabled {
+  color: var(--muted-foreground);
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .outline-item.active {
   background: var(--accent-soft);
   color: var(--foreground);
@@ -360,6 +367,21 @@ body {
 :is(.ProseMirror, .read-view) hr {
   border: 0;
   border-top: 1px solid var(--border);
+}
+
+:is(.ProseMirror, .read-view) a {
+  color: var(--accent);
+}
+
+:is(.ProseMirror, .read-view) a[data-inert-link] {
+  color: var(--foreground);
+  cursor: default;
+  text-decoration: none;
+}
+
+:is(.ProseMirror, .read-view) img {
+  max-width: 100%;
+  height: auto;
 }
 
 :is(.ProseMirror, .read-view) table {

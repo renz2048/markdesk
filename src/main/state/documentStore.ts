@@ -5,6 +5,12 @@ import { serializeMarkdown } from "../../markdown/serializer";
 
 export type EditorMode = "wysiwyg" | "source" | "read";
 export type ThemePreference = "light" | "dark" | "system";
+export type ModeTransitionErrorKind = "parse" | "serialize";
+
+export interface ModeTransitionError {
+  kind: ModeTransitionErrorKind;
+  message: string;
+}
 
 export interface DocumentStoreState {
   filePath: string | null;
@@ -13,7 +19,7 @@ export interface DocumentStoreState {
   dirty: boolean;
   mode: EditorMode;
   sourceText: string;
-  sourceParseError: string | null;
+  modeTransitionError: ModeTransitionError | null;
   sessionKey: string;
   sessionGeneration: number;
   themePreference: ThemePreference;
@@ -39,7 +45,7 @@ const initialSourceText = serializeMarkdown(initialDoc);
 function transitionDocumentState(
   state: Pick<
     DocumentStoreState,
-    "doc" | "mode" | "sourceText" | "sourceParseError"
+    "doc" | "mode" | "sourceText" | "modeTransitionError"
   >,
   nextMode: EditorMode,
 ): Partial<DocumentStoreState> {
@@ -50,12 +56,15 @@ function transitionDocumentState(
       return {
         mode: nextMode,
         sourceText: serializeMarkdown(state.doc),
-        sourceParseError: null,
+        modeTransitionError: null,
       };
     } catch {
       return {
         mode: state.mode,
-        sourceParseError: "Markdown 序列化失败",
+            modeTransitionError: {
+              kind: "serialize",
+              message: "Markdown 序列化失败",
+            },
       };
     }
   }
@@ -65,17 +74,20 @@ function transitionDocumentState(
       return {
         mode: nextMode,
         doc: parseMarkdown(state.sourceText),
-        sourceParseError: null,
+        modeTransitionError: null,
       };
     } catch {
       return {
         mode: "source",
-        sourceParseError: "Markdown 解析失败",
+            modeTransitionError: {
+              kind: "parse",
+              message: "Markdown 解析失败",
+            },
       };
     }
   }
 
-  return { mode: nextMode, sourceParseError: null };
+  return { mode: nextMode, modeTransitionError: null };
 }
 
 export const useDocumentStore = create<DocumentStoreState>((set) => ({
@@ -85,15 +97,16 @@ export const useDocumentStore = create<DocumentStoreState>((set) => ({
   dirty: false,
   mode: "wysiwyg",
   sourceText: initialSourceText,
-  sourceParseError: null,
+  modeTransitionError: null,
   sessionKey: "session-0",
   sessionGeneration: 0,
   themePreference: "system",
-  setDocument: (doc, dirty = true) => set({ doc, dirty }),
+  setDocument: (doc, dirty = true) =>
+    set((state) => (state.mode === "source" ? {} : { doc, dirty })),
   setMode: (mode) =>
     set((state) => transitionDocumentState(state, mode)),
   setSourceText: (sourceText, dirty = true) =>
-    set({ sourceText, dirty, sourceParseError: null }),
+    set({ sourceText, dirty, modeTransitionError: null }),
   transitionMode: (nextMode) =>
     set((state) => transitionDocumentState(state, nextMode)),
   replaceDocument: ({ doc, filePath, fileName, dirty = false }) =>
@@ -105,7 +118,7 @@ export const useDocumentStore = create<DocumentStoreState>((set) => ({
         fileName,
         dirty,
         sourceText: serializeMarkdown(doc),
-        sourceParseError: null,
+        modeTransitionError: null,
         sessionGeneration,
         sessionKey: `session-${sessionGeneration}`,
       };

@@ -2,6 +2,7 @@ import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 import { MarkdownParser } from "prosemirror-markdown";
 import { markdownSchema } from "./schema";
+import { safeImageSrc, safeLinkHref } from "./urlPolicy";
 
 interface MarkdownTextToken {
   content: string;
@@ -108,6 +109,10 @@ const taskMarkdownIt = markdownIt.use(taskLists, {
   enabled: false,
   label: true,
 }).disable("html_inline");
+// markdown-it's built-in scheme filter runs before MarkdownParser attrs.
+// Keep destinations tokenized here and apply MarkDesk's context-sensitive
+// link/image allowlists at the model boundary below.
+taskMarkdownIt.validateLink = () => true;
 // Insert before the task-list renderer plugin's own inline transformation so
 // MarkDesk can move the source marker into list_item.attrs without depending
 // on plugin-specific checkbox token shapes.
@@ -181,7 +186,7 @@ export const markdownParser = new MarkdownParser(markdownSchema, taskMarkdownIt,
     node: "image",
     getAttrs(token) {
       return {
-        src: token.attrGet("src") ?? "",
+        src: safeImageSrc(token.attrGet("src") ?? ""),
         alt: flattenImageAlt(token.children),
         title: token.attrGet("title"),
       };
@@ -196,7 +201,7 @@ export const markdownParser = new MarkdownParser(markdownSchema, taskMarkdownIt,
     mark: "link",
     getAttrs(token) {
       return {
-        href: token.attrGet("href") ?? "",
+        href: safeLinkHref(token.attrGet("href") ?? ""),
         title: token.attrGet("title"),
       };
     },

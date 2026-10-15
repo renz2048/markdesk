@@ -8,47 +8,9 @@ import { wrapInList } from "prosemirror-schema-list";
 import type { Mark, Node as PMNode } from "prosemirror-model";
 import type { EditorState, ResolvedPos, Transaction } from "prosemirror-state";
 import { markdownSchema } from "../../markdown/schema";
+import { normalizeLinkHref } from "../../markdown/urlPolicy";
 
-const controlCharacterPattern = /[\u0000-\u001f\u007f-\u009f]/;
-const schemePattern = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
-
-export function normalizeLinkHref(href: string): string {
-  const trimmed = href.trim();
-  if (!trimmed || controlCharacterPattern.test(trimmed)) {
-    throw new Error("Unsafe or malformed link URL");
-  }
-
-  if (/^[\/\\]{2}/.test(trimmed)) {
-    throw new Error("Unsafe or malformed link URL");
-  }
-
-  const schemeMatch = schemePattern.exec(trimmed);
-  if (!schemeMatch) {
-    try {
-      new URL(trimmed, "https://markdesk.invalid/");
-    } catch {
-      throw new Error("Unsafe or malformed link URL");
-    }
-    return trimmed.replace(/^\.\//, "");
-  }
-
-  const scheme = schemeMatch[1].toLowerCase();
-  if (!["http", "https", "mailto"].includes(scheme)) {
-    throw new Error("Unsafe or malformed link URL");
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    throw new Error("Unsafe or malformed link URL");
-  }
-
-  if ((scheme === "http" || scheme === "https") && !parsed.hostname) {
-    throw new Error("Unsafe or malformed link URL");
-  }
-  return parsed.href;
-}
+export { normalizeLinkHref };
 
 export const formattingKeymap: Record<string, Command> = {
   "Mod-b": toggleMarkByName("strong"),

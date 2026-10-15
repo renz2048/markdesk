@@ -44,8 +44,8 @@ export default function App() {
   const dirty = useDocumentStore((state) => state.dirty);
   const mode = useDocumentStore((state) => state.mode);
   const sourceText = useDocumentStore((state) => state.sourceText);
-  const sourceParseError = useDocumentStore(
-    (state) => state.sourceParseError,
+  const modeTransitionError = useDocumentStore(
+    (state) => state.modeTransitionError,
   );
   const sessionKey = useDocumentStore((state) => state.sessionKey);
   const themePreference = useDocumentStore(
@@ -86,6 +86,12 @@ export default function App() {
     root.classList.toggle("theme-light", resolvedTheme === "light");
     root.classList.toggle("theme-dark", resolvedTheme === "dark");
     root.style.colorScheme = resolvedTheme;
+    return () => {
+      delete root.dataset.theme;
+      delete root.dataset.themePreference;
+      root.classList.remove("theme-light", "theme-dark");
+      root.style.removeProperty("color-scheme");
+    };
   }, [resolvedTheme, themePreference]);
 
   const outlineItems = useMemo(() => outlineFromDoc(doc), [doc]);
@@ -127,15 +133,17 @@ export default function App() {
                 doc={doc}
                 onJump={jumpToHeading}
                 activePos={activeHeadingPos}
+                disabled={mode !== "wysiwyg"}
               />
               <section className="editor-pane" aria-label="编辑器">
-                {sourceParseError ? (
+                {modeTransitionError ? (
                   <p
                     className="mode-error"
                     role="alert"
-                    data-testid="source-parse-error"
+                    data-testid="mode-transition-error"
+                    data-error-kind={modeTransitionError.kind}
                   >
-                    {sourceParseError}
+                    {modeTransitionError.message}
                   </p>
                 ) : null}
                 {mode === "wysiwyg" ? (

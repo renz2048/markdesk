@@ -24,3 +24,24 @@ export function contentSecurityPolicy(): string {
     "frame-ancestors 'none'",
   ].join("; ");
 }
+
+export function shouldOpenExternalUrl(url: string): boolean {
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(url) || url.includes("\\")) {
+    return false;
+  }
+  try {
+    const parsed = new URL(url);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      Boolean(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function preventInAppNavigation(event: {
+  preventDefault(): void;
+}): void {
+  event.preventDefault();
+}

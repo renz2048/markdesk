@@ -13,12 +13,13 @@
     "build": "tsc -p tsconfig.electron.json && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test",
+    "e2e": "npm run build && playwright test",
     "dist": "npm run build && electron-builder"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "6.3.1",
     "@codemirror/language-data": "6.0.1",
+    "@codemirror/state": "6.5.2",
     "codemirror": "6.0.1",
     "dompurify": "3.2.3",
     "electron": "33.2.0",

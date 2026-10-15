@@ -32,7 +32,7 @@ describe("editor modes", () => {
       sessionKey: "session-0",
       sessionGeneration: 0,
       sourceText: "",
-      sourceParseError: null,
+      modeTransitionError: null,
       themePreference: "system",
     });
   });
@@ -50,7 +50,7 @@ describe("editor modes", () => {
     const state = useDocumentStore.getState();
     expect(state.mode).toBe("source");
     expect(state.sourceText).toBe("# Title\n\n<!-- protected -->\n");
-    expect(state.sourceParseError).toBeNull();
+    expect(state.modeTransitionError).toBeNull();
     expect(state.dirty).toBe(false);
     expect(state.sessionKey).toBe("session-1");
   });
@@ -74,7 +74,7 @@ describe("editor modes", () => {
     expect(state.doc.child(1).attrs.source).toBe("<!-- protected -->");
     expect(state.sourceText).toBe("# After\n\n<!-- protected -->\n");
     expect(state.dirty).toBe(true);
-    expect(state.sourceParseError).toBeNull();
+    expect(state.modeTransitionError).toBeNull();
   });
 
   it("updates the read model from source while preserving dirty state", () => {
@@ -93,7 +93,7 @@ describe("editor modes", () => {
     expect(state.mode).toBe("read");
     expect(state.doc.textContent).toBe("For reading");
     expect(state.dirty).toBe(true);
-    expect(state.sourceParseError).toBeNull();
+    expect(state.modeTransitionError).toBeNull();
   });
 
   it("keeps source content and reports an error when parsing fails", () => {
@@ -113,13 +113,35 @@ describe("editor modes", () => {
     expect(failed.mode).toBe("source");
     expect(failed.sourceText).toBe("__PARSE_FAILURE__");
     expect(failed.doc).toBe(staleDoc);
-    expect(failed.sourceParseError).toBe("Markdown 解析失败");
+    expect(failed.modeTransitionError).toEqual({
+      kind: "parse",
+      message: "Markdown 解析失败",
+    });
     expect(failed.dirty).toBe(true);
 
     useDocumentStore.getState().setSourceText("# Recovered\n");
     useDocumentStore.getState().transitionMode("wysiwyg");
     expect(useDocumentStore.getState().doc.textContent).toBe("Recovered");
-    expect(useDocumentStore.getState().sourceParseError).toBeNull();
+    expect(useDocumentStore.getState().modeTransitionError).toBeNull();
+  });
+
+  it("rejects direct model edits while source text is authoritative", () => {
+    useDocumentStore.getState().replaceDocument({
+      doc: parseMarkdown("# Authoritative source\n"),
+      filePath: null,
+      fileName: "demo.md",
+      dirty: false,
+    });
+    useDocumentStore.getState().transitionMode("source");
+    const before = useDocumentStore.getState();
+
+    useDocumentStore.getState().setDocument(parseMarkdown("# Stale model\n"));
+
+    const after = useDocumentStore.getState();
+    expect(after.doc).toBe(before.doc);
+    expect(after.sourceText).toBe(before.sourceText);
+    expect(after.mode).toBe("source");
+    expect(after.dirty).toBe(false);
   });
 
   it("stores the theme preference", () => {
@@ -130,7 +152,9 @@ describe("editor modes", () => {
     expect(useDocumentStore.getState().themePreference).toBe("dark");
   });
 
-  it("exposes non-editing mode surfaces for later E2E checks", () => {
+  it("wrapper-only SSR assertions expose shells but do not exercise browser rendering", () => {
+    // Effects do not run in renderToStaticMarkup: this test covers props only.
+    // tests/e2e/editorModes.spec.ts exercises CodeMirror and serialized DOM.
     const source = renderToStaticMarkup(
       createElement(SourceEditor, {
         initialValue: "# Source\n",

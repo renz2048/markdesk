@@ -352,6 +352,32 @@ describe("round-trip preservation", () => {
     );
   });
 
+  it("neutralizes parsed link schemes outside the shared link policy", () => {
+    for (const href of ["foo:bar", "javascript:alert(1)", "file:///x"]) {
+      const mark = linkMark(parseMarkdown(`[custom](${href})`));
+      expect(mark.attrs.href).toBe("");
+    }
+    expect(
+      firstParagraph(parseMarkdown("[custom](foo:bar)")).child(0).textContent,
+    ).toBe("custom");
+  });
+
+  it("neutralizes parsed image sources outside the shared image policy", () => {
+    for (const src of ["foo:bar", "javascript:alert(1)", "file:///x.png"]) {
+      const image = parseMarkdown(`![bad](${src})`).child(0).child(0);
+      expect(image.type).toBe(markdownSchema.nodes.image);
+      expect(image.attrs.src).toBe("");
+      expect(image.attrs.alt).toBe("bad");
+    }
+  });
+
+  it("accepts every data:image subtype at the parser boundary", () => {
+    const source = "![vector](data:image/svg+xml,<svg></svg>)";
+    const image = parseMarkdown(source).child(0).child(0);
+    expect(image.type).toBe(markdownSchema.nodes.image);
+    expect(image.attrs.src).toBe("data:image/svg+xml,<svg></svg>");
+  });
+
   it("preserves hard breaks as explicit hard-break nodes", () => {
     const source = "before\\\nafter";
     const paragraph = parseMarkdown(source).child(0);

@@ -5,10 +5,12 @@ export function OutlinePanel({
   doc,
   onJump,
   activePos,
+  disabled = false,
 }: {
   doc: Node;
   onJump(pos: number): void;
   activePos?: number;
+  disabled?: boolean;
 }) {
   const items = outlineFromDoc(doc);
 
@@ -28,6 +30,7 @@ export function OutlinePanel({
             }`}
             aria-current={item.pos === activePos ? "true" : undefined}
             data-testid={`outline-${item.id}`}
+            disabled={disabled}
             onClick={() => onJump(item.pos)}
           >
             {item.text || "未命名标题"}

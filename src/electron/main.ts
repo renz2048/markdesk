@@ -1,6 +1,11 @@
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
-import { contentSecurityPolicy, secureWebPreferences } from "./security";
+import {
+  contentSecurityPolicy,
+  preventInAppNavigation,
+  secureWebPreferences,
+  shouldOpenExternalUrl,
+} from "./security";
 
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -23,8 +28,10 @@ export function createMainWindow(): BrowserWindow {
   });
 
   win.once("ready-to-show", () => win.show());
+  win.webContents.on("will-navigate", preventInAppNavigation);
+  win.webContents.on("will-redirect", preventInAppNavigation);
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) void shell.openExternal(url);
+    if (shouldOpenExternalUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
 
