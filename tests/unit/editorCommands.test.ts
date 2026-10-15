@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { EditorState, TextSelection, Transaction } from "prosemirror-state";
-import { Node } from "prosemirror-model";
 import type { Command } from "prosemirror-commands";
 import type { Node } from "prosemirror-model";
 import { parseMarkdown } from "../../src/markdown/parser";
@@ -133,7 +132,7 @@ describe("editor commands", () => {
 
   it("rejects invalid heading levels and empty links", () => {
     expect(() => setHeading(0)).toThrow(RangeError);
-    expect(() => setLink("")).toThrow("Link href cannot be empty");
+    expect(() => setLink("")).toThrow("Unsafe or malformed link URL");
   });
 
   it("binds explicit formatting shortcuts and installs them before base keys", () => {
@@ -183,7 +182,8 @@ describe("editor commands", () => {
   });
 
   it("replaces an existing link while preserving unrelated marks", () => {
-    const source = "[**bold link**](https://old.example/docs)";
+    const source =
+      '[**bold link**](https://old.example/docs "Existing title")';
     const next = applyCommand(
       setLink("https://new.example/latest"),
       stateWithTextRange(source, "bold link"),
@@ -195,6 +195,9 @@ describe("editor commands", () => {
     expect(text?.marks.find((mark) => mark.type.name === "link")?.attrs.href).toBe(
       "https://new.example/latest",
     );
+    expect(
+      text?.marks.find((mark) => mark.type.name === "link")?.attrs.title,
+    ).toBe("Existing title");
   });
 
   it("sets one href over multiple ranges and plain text in a selection", () => {
@@ -254,6 +257,10 @@ describe("editor commands", () => {
       "https://example.com/\u0000",
       "https://[malformed",
       "http://",
+      "//example.com/path",
+      "\\\\example.com\\path",
+      "/\\example.com/path",
+      "\\/example.com/path",
     ]) {
       expect(() => normalizeLinkHref(unsafe)).toThrow(/unsafe or malformed/i);
     }

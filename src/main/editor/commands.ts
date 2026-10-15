@@ -18,6 +18,10 @@ export function normalizeLinkHref(href: string): string {
     throw new Error("Unsafe or malformed link URL");
   }
 
+  if (/^[\/\\]{2}/.test(trimmed)) {
+    throw new Error("Unsafe or malformed link URL");
+  }
+
   const schemeMatch = schemePattern.exec(trimmed);
   if (!schemeMatch) {
     try {
@@ -74,20 +78,50 @@ export function setLink(href: string): Command {
 
   return (state: EditorState, dispatch?: (transaction: Transaction) => void) => {
     if (dispatch) {
-      const mark = markdownSchema.marks.link.create({ href: normalizedHref });
       const tr = state.tr;
+      const createLinkMark = (title: string | null) =>
+        markdownSchema.marks.link.create({ href: normalizedHref, title });
 
       if (state.selection.empty) {
         const existingRange = contiguousLinkRange(state.selection.$from);
         if (existingRange) {
-          tr.addMark(existingRange.from, existingRange.to, mark);
+          tr.addMark(
+            existingRange.from,
+            existingRange.to,
+            createLinkMark(existingRange.title),
+          );
         }
-        tr.addStoredMark(mark);
+        tr.addStoredMark(
+          createLinkMark(existingRange?.title ?? null),
+        );
       } else {
         for (const range of state.selection.ranges) {
           const from = Math.min(range.from, range.to);
           const to = Math.max(range.from, range.to);
-          tr.addMark(from, to, mark);
+          let markedText = false;
+
+          state.doc.nodesBetween(from, to, (node: PMNode, pos: number) => {
+            if (!node.isText) return true;
+
+            const start = Math.max(from, pos);
+            const end = Math.min(to, pos + node.nodeSize);
+            if (start >= end) return true;
+
+            const existingLink = node.marks.find(
+              (mark: Mark) => mark.type === markdownSchema.marks.link,
+            );
+            tr.addMark(
+              start,
+              end,
+              createLinkMark(existingLink?.attrs.title ?? null),
+            );
+            markedText = true;
+            return true;
+          });
+
+          if (!markedText) {
+            tr.addMark(from, to, createLinkMark(null));
+          }
         }
       }
 
@@ -116,17 +150,25 @@ export function selectedLinkHref(state: EditorState): string | null {
 function contiguousLinkRange($position: ResolvedPos): {
   from: number;
   to: number;
+  title: string | null;
 } | null {
   const parent = $position.parent;
-  const offsets: Array<{ from: number; to: number; hasLink: boolean }> = [];
+  const offsets: Array<{
+    from: number;
+    to: number;
+    hasLink: boolean;
+    title: string | null;
+  }> = [];
 
   parent.forEach((node: PMNode, offset: number) => {
+    const link = node.marks.find(
+      (mark: Mark) => mark.type === markdownSchema.marks.link,
+    );
     offsets.push({
       from: offset,
       to: offset + node.nodeSize,
-      hasLink: node.marks.some(
-        (mark: Mark) => mark.type === markdownSchema.marks.link,
-      ),
+      hasLink: Boolean(link),
+      title: link?.attrs.title ?? null,
     });
   });
 
@@ -149,6 +191,7 @@ function contiguousLinkRange($position: ResolvedPos): {
   return {
     from: parentStart + offsets[startIndex].from,
     to: parentStart + offsets[endIndex].to,
+    title: selected.title,
   };
 }
 
