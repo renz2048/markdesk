@@ -1,5 +1,6 @@
 import { Node } from "prosemirror-model";
 import { MarkdownSerializer } from "prosemirror-markdown";
+import { markdownSchema } from "./schema";
 
 function longestCharacterRun(value: string, character: "`" | "~"): number {
   let longest = 0;
@@ -134,6 +135,107 @@ function formatImageAlt(alt: string | null | undefined): string {
   );
 }
 
+type TableAlignment = "left" | "center" | "right";
+
+function tableAlignment(value: unknown): TableAlignment {
+  return value === "center" || value === "right" ? value : "left";
+}
+
+function tableCellMarkdown(cell: Node): string {
+  const paragraph = markdownSchema.nodes.paragraph.createAndFill(
+    {},
+    cell.content,
+  );
+  if (!paragraph) return "";
+
+  return markdownSerializer
+    .serialize(paragraph, { hardBreakNodeName: "hard_break" })
+    .replace(/\n$/, "");
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\|/g, "\\|");
+}
+
+function alignmentMarker(alignment: TableAlignment): string {
+  if (alignment === "center") return ":---:";
+  if (alignment === "right") return "---:";
+  return ":---";
+}
+
+function padTableCell(
+  value: string,
+  width: number,
+  alignment: TableAlignment,
+): string {
+  const padding = " ".repeat(Math.max(0, width - value.length));
+  if (alignment === "right") return `${padding}${value}`;
+  if (alignment === "center") {
+    const left = " ".repeat(Math.floor(padding.length / 2));
+    const right = " ".repeat(padding.length - left.length);
+    return `${left}${value}${right}`;
+  }
+  return `${value}${padding}`;
+}
+
+function paddedAlignmentMarker(
+  alignment: TableAlignment,
+  width: number,
+): string {
+  const hyphens = "-".repeat(Math.max(1, width - 2));
+  if (alignment === "left") return `:${"-".repeat(Math.max(2, width - 1))}`;
+  if (alignment === "center") return `:${hyphens}:`;
+  return `${"-".repeat(Math.max(2, width - 1))}:`;
+}
+
+function tableMarkdown(table: Node): string {
+  const rows: { content: string; alignment: TableAlignment }[][] = [];
+  const alignments: TableAlignment[] = [];
+  const widths: number[] = [];
+
+  table.forEach((row) => {
+    const cells: { content: string; alignment: TableAlignment }[] = [];
+    row.forEach((cell, _offset, columnIndex) => {
+      const alignment = tableAlignment(cell.attrs.alignment);
+      const content = escapeTableCell(tableCellMarkdown(cell));
+      cells.push({ content, alignment });
+
+      if (row === table.child(0)) alignments[columnIndex] = alignment;
+      if (!alignments[columnIndex]) alignments[columnIndex] = alignment;
+    });
+    rows.push(cells);
+  });
+
+  const columnCount = Math.max(1, ...rows.map((cells) => cells.length));
+  for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+    widths[columnIndex] = Math.max(
+      alignmentMarker(tableAlignment(alignments[columnIndex] ?? "left")).length,
+      ...rows.map((cells) => cells[columnIndex]?.content.length ?? 0),
+    );
+  }
+
+  const renderedRows = rows.map((cells) => {
+    const renderedCells = Array.from({ length: columnCount }, (_, columnIndex) =>
+      padTableCell(
+        cells[columnIndex]?.content ?? "",
+        widths[columnIndex] ?? 0,
+        tableAlignment(alignments[columnIndex] ?? "left"),
+      ),
+    );
+    return `| ${renderedCells.join(" | ")} |`;
+  });
+
+  const separatorCells = widths.map((width, columnIndex) =>
+    paddedAlignmentMarker(
+      tableAlignment(alignments[columnIndex] ?? "left"),
+      width,
+    ),
+  );
+  renderedRows.splice(1, 0, `| ${separatorCells.join(" | ")} |`);
+
+  return renderedRows.join("\n");
+}
+
 export const markdownSerializer = new MarkdownSerializer(
   {
     doc(state, node) {
@@ -161,6 +263,11 @@ export const markdownSerializer = new MarkdownSerializer(
       state.renderList(node, space, (index) => `${start + index}. `);
     },
     list_item(state, node) {
+      if (node.attrs.task === "done") {
+        state.write("[x] ");
+      } else if (node.attrs.task === "todo") {
+        state.write("[ ] ");
+      }
       state.renderContent(node);
     },
     code_block(state, node) {
@@ -176,6 +283,14 @@ export const markdownSerializer = new MarkdownSerializer(
     },
     horizontal_rule(state, node) {
       state.write("---");
+      state.closeBlock(node);
+    },
+    table(state, node) {
+      state.write(tableMarkdown(node));
+      state.closeBlock(node);
+    },
+    raw_block(state, node) {
+      state.write(String(node.attrs.source ?? ""));
       state.closeBlock(node);
     },
     image(state, node) {

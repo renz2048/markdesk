@@ -50,6 +50,7 @@ export const markdownSchema = new Schema({
     },
     list_item: {
       content: "paragraph block*",
+      attrs: { task: { default: null } },
       toDOM() {
         return ["li", 0];
       },
@@ -72,6 +73,52 @@ export const markdownSchema = new Schema({
       atom: true,
       toDOM() {
         return ["hr"];
+      },
+    },
+    table: {
+      content: "table_row+",
+      group: "block",
+      tableRole: "table",
+      toDOM() {
+        return ["table", 0];
+      },
+    },
+    table_row: {
+      content: "table_cell+",
+      group: "block",
+      tableRole: "row",
+      toDOM() {
+        return ["tr", 0];
+      },
+    },
+    table_cell: {
+      content: "inline*",
+      group: "block",
+      attrs: {
+        alignment: { default: "left" },
+        header: { default: false },
+      },
+      tableRole: "cell",
+      toDOM(node) {
+        return [
+          node.attrs.header ? "th" : "td",
+          {
+            style:
+              node.attrs.alignment === "left"
+                ? null
+                : `text-align:${node.attrs.alignment}`,
+          },
+          0,
+        ];
+      },
+    },
+    raw_block: {
+      group: "block",
+      atom: true,
+      code: true,
+      attrs: { source: { default: "" } },
+      toDOM(node) {
+        return ["pre", { "data-markdesk-raw": "true" }, node.attrs.source];
       },
     },
     text: { group: "inline" },
