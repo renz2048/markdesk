@@ -459,7 +459,15 @@ body {
   background: var(--surface);
 }
 
+.view-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
 .mode-switcher,
+.file-actions,
 .theme-select-label {
   display: flex;
   align-items: center;
@@ -493,6 +501,11 @@ body {
 .theme-select-label select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.mode-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .theme-select-label {
@@ -544,5 +557,10 @@ body {
   .view-bar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .view-actions,
+  .file-actions {
+    flex-wrap: wrap;
   }
 }

@@ -7,6 +7,8 @@ import {
 } from "react";
 import type { EditorView } from "prosemirror-view";
 import { TextSelection } from "prosemirror-state";
+import { parseMarkdown } from "../markdown/parser";
+import { serializeMarkdown } from "../markdown/serializer";
 import { OutlinePanel } from "./components/OutlinePanel";
 import { ReadView } from "./components/ReadView";
 import { SourceEditor } from "./components/SourceEditor";
@@ -24,6 +26,11 @@ import {
   type EditorMode,
   type ThemePreference,
 } from "./state/documentStore";
+import type {
+  FileFingerprint,
+  MenuCommand,
+  NewlinePreference,
+} from "../shared/types";
 
 const modeLabels = {
   wysiwyg: "所见即所得",
@@ -37,6 +44,46 @@ const themeLabels: Record<ThemePreference, string> = {
   dark: "深色",
   system: "跟随系统",
 };
+
+interface FileActionError {
+  code: string;
+  message: string;
+}
+
+function normalizeForSave(
+  content: string,
+  newline: NewlinePreference,
+): string {
+  const lfContent = content.replace(/\r\n?/gu, "\n");
+  return newline === "crlf"
+    ? lfContent.replace(/\n/gu, "\r\n")
+    : lfContent;
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/u).filter(Boolean).at(-1) ?? "未命名.md";
+}
+
+function fileActionError(error: unknown): FileActionError {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "unexpected-error";
+
+  const messages: Record<string, string> = {
+    "file-changed": "文件已被其他程序修改，请重新打开后再保存。",
+    "file-too-large": "文件或内容超过 10 MiB 限制。",
+    "invalid-path": "Markdown 文件路径未获授权或无效。",
+    "invalid-encoding": "文件不是有效的 UTF-8 Markdown。",
+    parse: "Markdown 解析失败，无法打开文件。",
+    serialize: "Markdown 序列化失败，无法保存文件。",
+  };
+
+  return {
+    code,
+    message: messages[code] ?? "文件操作失败，请稍后重试。",
+  };
+}
 
 export default function App() {
   const doc = useDocumentStore((state) => state.doc);
@@ -57,9 +104,17 @@ export default function App() {
   const setThemePreference = useDocumentStore(
     (state) => state.setThemePreference,
   );
+  const api = typeof window === "undefined" ? undefined : window.markdesk;
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [selectionPosition, setSelectionPosition] = useState(0);
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
+  const [fileFingerprint, setFileFingerprint] =
+    useState<FileFingerprint | null>(null);
+  const [newlinePreference, setNewlinePreference] =
+    useState<NewlinePreference>("lf");
+  const [fileBusy, setFileBusy] = useState(false);
+  const [fileActionError, setFileActionError] =
+    useState<FileActionError | null>(null);
 
   useEffect(() => {
     setSelectionPosition(0);
@@ -116,6 +171,157 @@ export default function App() {
     [editorView],
   );
 
+  const newDocument = useCallback(() => {
+    useDocumentStore
+      .getState()
+      .replaceDocument({
+        doc: parseMarkdown(""),
+        filePath: null,
+        fileName: "未命名.md",
+        dirty: false,
+      });
+    setFileFingerprint(null);
+    setNewlinePreference("lf");
+    setFileActionError(null);
+  }, []);
+
+  const openDocument = useCallback(async () => {
+    if (!api || fileBusy) return;
+
+    setFileBusy(true);
+    setFileActionError(null);
+    try {
+      const path = await api.chooseMarkdownFile();
+      if (!path) return;
+
+      const file = await api.readFile(path);
+      const doc = parseMarkdown(file.content);
+      useDocumentStore.getState().replaceDocument({
+        doc,
+        filePath: file.path,
+        fileName: fileNameFromPath(file.path),
+        dirty: false,
+      });
+      setFileFingerprint({
+        hash: file.hash,
+        mtimeMs: file.mtimeMs,
+        size: file.size,
+      });
+      setNewlinePreference(file.newline);
+    } catch (error) {
+      setFileActionError(fileActionError(error));
+    } finally {
+      setFileBusy(false);
+    }
+  }, [api, fileBusy]);
+
+  const persistCurrentDocument = useCallback(
+    async (
+      path: string,
+      expected: FileFingerprint | undefined,
+    ): Promise<void> => {
+      const state = useDocumentStore.getState();
+      const source =
+        state.mode === "source"
+          ? state.sourceText
+          : serializeMarkdown(state.doc);
+      const content = normalizeForSave(source, newlinePreference);
+      const result = await api?.writeFile(path, content, expected);
+      if (!result) throw new Error("MarkDesk IPC 不可用。");
+
+      state.saveAs(result.path, fileNameFromPath(result.path));
+      state.markSaved();
+      setFileFingerprint({
+        hash: result.hash,
+        mtimeMs: result.mtimeMs,
+        size: result.size,
+      });
+      setNewlinePreference((current) =>
+        content.includes("\r\n") ? "crlf" : current,
+      );
+    },
+    [api, newlinePreference],
+  );
+
+  const saveDocument = useCallback(async () => {
+    if (!api || fileBusy) return;
+
+    setFileBusy(true);
+    setFileActionError(null);
+    try {
+      const state = useDocumentStore.getState();
+      if (!state.filePath) {
+        const path = await api.chooseSaveLocation(state.fileName);
+        if (!path) return;
+        await persistCurrentDocument(path, undefined);
+        return;
+      }
+
+      await persistCurrentDocument(state.filePath, fileFingerprint ?? undefined);
+    } catch (error) {
+      setFileActionError(fileActionError(error));
+    } finally {
+      setFileBusy(false);
+    }
+  }, [api, fileBusy, fileFingerprint, persistCurrentDocument]);
+
+  const saveDocumentAs = useCallback(async () => {
+    if (!api || fileBusy) return;
+
+    setFileBusy(true);
+    setFileActionError(null);
+    try {
+      const state = useDocumentStore.getState();
+      const path = await api.chooseSaveLocation(state.fileName);
+      if (!path) return;
+
+      await persistCurrentDocument(
+        path,
+        path === state.filePath ? fileFingerprint ?? undefined : undefined,
+      );
+    } catch (error) {
+      setFileActionError(fileActionError(error));
+    } finally {
+      setFileBusy(false);
+    }
+  }, [api, fileBusy, fileFingerprint, persistCurrentDocument]);
+
+  const handleMenuCommand = useCallback(
+    (command: MenuCommand) => {
+      if (command === "new") newDocument();
+      else if (command === "open") void openDocument();
+      else if (command === "save") void saveDocument();
+      else if (command === "save-as") void saveDocumentAs();
+      else if (command === "toggle-source") transitionMode("source");
+      else if (command === "toggle-read") transitionMode("read");
+      else if (command === "toggle-wysiwyg") transitionMode("wysiwyg");
+    },
+    [
+      newDocument,
+      openDocument,
+      saveDocument,
+      saveDocumentAs,
+      transitionMode,
+    ],
+  );
+
+  useEffect(() => {
+    if (!api) return;
+    return api.onMenuCommand(handleMenuCommand);
+  }, [api, handleMenuCommand]);
+
+  useEffect(() => {
+    if (!api) return;
+    return api.onFileChanged((event) => {
+      if (useDocumentStore.getState().filePath === event.path) {
+        setFileActionError({
+          code: "file-changed",
+          message: "文件已在其他程序中修改，保存前会进行冲突检查。",
+        });
+      }
+    });
+  }, [api]);
+
   return (
     <main className="app-shell" data-testid="app-shell">
       <EditorViewContext.Provider value={editorView}>
@@ -127,6 +333,11 @@ export default function App() {
               themePreference={themePreference}
               onModeChange={transitionMode}
               onThemeChange={setThemePreference}
+              onNewDocument={newDocument}
+              onOpenDocument={openDocument}
+              onSaveDocument={saveDocument}
+              onSaveDocumentAs={saveDocumentAs}
+              fileBusy={fileBusy}
             />
             <div className="workspace" data-testid="workspace">
               <OutlinePanel
@@ -144,6 +355,16 @@ export default function App() {
                     data-error-kind={modeTransitionError.kind}
                   >
                     {modeTransitionError.message}
+                  </p>
+                ) : null}
+                {fileActionError ? (
+                  <p
+                    className="mode-error file-error"
+                    role="alert"
+                    data-testid="file-error"
+                    data-error-code={fileActionError.code}
+                  >
+                    {fileActionError.message}
                   </p>
                 ) : null}
                 {mode === "wysiwyg" ? (
@@ -177,33 +398,83 @@ function ViewBar({
   themePreference,
   onModeChange,
   onThemeChange,
+  onNewDocument,
+  onOpenDocument,
+  onSaveDocument,
+  onSaveDocumentAs,
+  fileBusy,
 }: {
   mode: EditorMode;
   themePreference: ThemePreference;
   onModeChange(mode: EditorMode): void;
   onThemeChange(theme: ThemePreference): void;
+  onNewDocument(): void;
+  onOpenDocument(): void | Promise<void>;
+  onSaveDocument(): void | Promise<void>;
+  onSaveDocumentAs(): void | Promise<void>;
+  fileBusy: boolean;
 }) {
   return (
     <div className="view-bar" data-testid="view-bar">
-      <div
-        className="mode-switcher"
-        role="group"
-        aria-label="编辑模式"
-        data-testid="mode-switcher"
-      >
-        {modes.map((item) => (
+      <div className="view-actions">
+        <div
+          className="mode-switcher"
+          role="group"
+          aria-label="编辑模式"
+          data-testid="mode-switcher"
+        >
+          {modes.map((item) => (
+            <button
+              key={item}
+              type="button"
+              className="mode-button"
+              aria-pressed={mode === item}
+              data-active={mode === item ? "true" : "false"}
+              data-testid={`mode-${item}`}
+              onClick={() => onModeChange(item)}
+            >
+              {modeLabels[item]}
+            </button>
+          ))}
+        </div>
+        <div className="file-actions" role="group" aria-label="文件操作">
           <button
-            key={item}
             type="button"
             className="mode-button"
-            aria-pressed={mode === item}
-            data-active={mode === item ? "true" : "false"}
-            data-testid={`mode-${item}`}
-            onClick={() => onModeChange(item)}
+            data-testid="file-new"
+            disabled={fileBusy}
+            onClick={onNewDocument}
           >
-            {modeLabels[item]}
+            新建
           </button>
-        ))}
+          <button
+            type="button"
+            className="mode-button"
+            data-testid="file-open"
+            disabled={fileBusy}
+            onClick={() => void onOpenDocument()}
+          >
+            打开
+          </button>
+          <button
+            type="button"
+            className="mode-button"
+            data-testid="file-save"
+            disabled={fileBusy}
+            onClick={() => void onSaveDocument()}
+          >
+            保存
+          </button>
+          <button
+            type="button"
+            className="mode-button"
+            data-testid="file-save-as"
+            disabled={fileBusy}
+            onClick={() => void onSaveDocumentAs()}
+          >
+            另存为
+          </button>
+        </div>
       </div>
       <label className="theme-select-label" htmlFor="theme-select">
         主题

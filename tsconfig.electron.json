@@ -5,7 +5,7 @@
     "moduleResolution": "Node",
     "lib": ["ES2022", "DOM"],
     "outDir": "dist-electron",
-    "rootDir": "src/electron",
+    "rootDir": "src",
     "strict": true,
     "sourceMap": true,
     "skipLibCheck": true,
