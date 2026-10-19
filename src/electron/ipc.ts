@@ -2,16 +2,19 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  protocol,
 } from "electron";
 import { watch } from "node:fs";
-import { realpath, stat } from "node:fs/promises";
-import { posix, win32 } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { dirname, posix, win32 } from "node:path";
 import {
   fingerprint,
   FileServiceError,
   isFileFingerprint,
+  isHtmlPath,
   isMarkdownPath,
   readMarkdownFile,
+  writeExportFile,
   writeMarkdownFile,
 } from "./file-service";
 import {
@@ -125,6 +128,12 @@ export interface SecureFileIpcDependencies {
     path: string,
     listener: (eventType: string) => void,
   ) => FileWatcherLike;
+  writeExport?: (path: string, html: string) => Promise<void>;
+  protocolHandle?: (
+    scheme: string,
+    handler: (request: { url: string }) => Promise<Response>,
+  ) => void;
+  readResourceFile?: (path: string) => Promise<Buffer>;
 }
 
 interface FileWatcherLike {
@@ -198,6 +207,62 @@ function normalizeUnresolvedPath(path: string): string {
     return win32.resolve(path).toLowerCase();
   }
   return posix.resolve(path);
+}
+
+const resourceMediaTypes = new Map([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".svg", "image/svg+xml"],
+  [".avif", "image/avif"],
+]);
+
+/**
+ * 解析 markdesk-resource: 请求。仅当存在当前打开的 Markdown 文档、
+ * 请求是相对路径、规范化后不逃逸文档目录、且扩展名在图片白名单内时
+ * 返回绝对路径；否则返回 null（拒绝）。
+ */
+export function resolveResourcePath(
+  openDirectories: readonly string[],
+  requestUrl: string,
+): string | null {
+  const match = /^markdesk-resource:(?!\/)/iu.exec(requestUrl);
+  if (!match) return null;
+  let relative: string;
+  try {
+    relative = decodeURIComponent(requestUrl.slice(match[0].length));
+  } catch {
+    return null;
+  }
+  if (
+    relative.length === 0 ||
+    relative.length > 1024 ||
+    /[\0-\x1f\u007f]/u.test(relative) ||
+    posix.isAbsolute(relative) ||
+    win32.isAbsolute(relative) ||
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(relative)
+  ) {
+    return null;
+  }
+  if (!resourceMediaTypes.has(posix.extname(relative).toLowerCase())) {
+    return null;
+  }
+  for (const directory of openDirectories) {
+    const pathMod = /^[a-zA-Z]:[\\/]/u.test(directory) ? win32 : posix;
+    const base = pathMod.resolve(directory);
+    const resolved = pathMod.resolve(directory, relative);
+    if (resolved.startsWith(`${base}${pathMod.sep}`)) {
+      return resolved;
+    }
+  }
+  return null;
+}
+
+function mediaTypeFor(path: string): string {
+  return resourceMediaTypes.get(posix.extname(path).toLowerCase()) ??
+    "application/octet-stream";
 }
 
 async function defaultCanonicalize(path: string): Promise<string> {
@@ -288,6 +353,20 @@ export function createSecureFileIpcController(
   const discardDraft = dependencies.discardRecoveryDraft ?? discardRecoveryDraft;
   const fingerprintFile = dependencies.fingerprintFile ?? fingerprint;
   const watchFile = dependencies.watch ?? defaultWatchFile;
+  const writeExport = dependencies.writeExport ?? writeExportFile;
+  const handleProtocol = dependencies.protocolHandle ??
+    ((scheme: string, handler: (request: { url: string }) => Promise<Response>) => {
+      // 单元测试环境没有 Electron 运行时（protocol 为 undefined），此时
+      // 跳过协议注册；路径解析逻辑由 resolveResourcePath 单测覆盖。
+      const runtimeProtocol = protocol as
+        | { handle?: (s: string, h: unknown) => void }
+        | undefined;
+      if (typeof runtimeProtocol?.handle === "function") {
+        runtimeProtocol.handle(scheme, handler);
+      }
+    });
+  const readResourceFile = dependencies.readResourceFile ??
+    ((path: string) => readFile(path));
   const grantsBySender = new Map<number, WindowFileGrants>();
   const closeRequests = new Map<number, CloseRequest>();
   const recentFilesListeners = new Set<RecentFilesListener>();
@@ -566,6 +645,26 @@ export function createSecureFileIpcController(
     if (registered) return;
     registered = true;
 
+    // 受限的本地图片协议：只在存在已打开的 Markdown 文档时解析相对
+    // 图片，且规范化后不得逃逸文档目录（详见 resolveResourcePath）。
+    handleProtocol("markdesk-resource", async (request) => {
+      const openDirectories = [...watchedFiles.keys()].map((canonical) =>
+        dirname(canonical)
+      );
+      const target = resolveResourcePath(openDirectories, request.url);
+      if (!target) {
+        return new Response("access denied", { status: 403 });
+      }
+      try {
+        const bytes = await readResourceFile(target);
+        return new Response(new Uint8Array(bytes), {
+          headers: { "Content-Type": mediaTypeFor(target) },
+        });
+      } catch {
+        return new Response("not found", { status: 404 });
+      }
+    });
+
     ipc.handle(
       markdeskChannels.chooseMarkdownFile,
       async (event): Promise<IpcResult<string | null>> =>
@@ -827,6 +926,64 @@ export function createSecureFileIpcController(
             );
           }
           await discardDraft(requireDraftStorage(), key);
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.chooseExportLocation,
+      async (
+        event,
+        defaultName: unknown,
+      ): Promise<IpcResult<string | null>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const safeDefaultName = defaultSaveName(defaultName);
+          const selection = await dialogs.showSaveDialog(grants.window, {
+            title: "导出 HTML",
+            defaultPath: safeDefaultName,
+            filters: [{ name: "HTML", extensions: ["html", "htm"] }],
+          });
+          const path = selection.filePath;
+          if (!path || !isHtmlPath(path)) return null;
+
+          const canonical = await canonicalize(path);
+          grants.writePaths.add(canonical);
+          return path;
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.exportHtml,
+      async (
+        event,
+        path: unknown,
+        html: unknown,
+      ): Promise<IpcResult<void>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          if (!isHtmlPath(path)) {
+            throw new FileServiceError(
+              "invalid-path",
+              "HTML 导出路径无效。",
+            );
+          }
+          if (typeof html !== "string") {
+            throw new FileServiceError(
+              "invalid-argument",
+              "导出内容无效。",
+            );
+          }
+          const canonical = await canonicalize(path);
+          if (
+            !grants.writePaths.has(canonical) &&
+            !grants.readPaths.has(canonical)
+          ) {
+            throw new FileServiceError(
+              "invalid-path",
+              "此导出路径未获授权。",
+            );
+          }
+          await writeExport(canonical, html);
         }),
     );
 

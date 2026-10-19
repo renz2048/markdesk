@@ -1,5 +1,22 @@
 import { Schema } from "prosemirror-model";
 
+/**
+ * 相对图片路径在编辑/阅读视图中通过受限的 markdesk-resource: 协议
+ * 加载（主进程确保不逃逸当前文档目录）；绝对 URL 与 data: URI 原样
+ * 输出。导出 HTML 时由 exportHtml 反向剥离协议前缀。
+ */
+export function editorImageSrc(src: string): string {
+  if (
+    src.length === 0 ||
+    src.startsWith("/") ||
+    src.startsWith("markdesk-resource:") ||
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(src)
+  ) {
+    return src;
+  }
+  return `markdesk-resource:${src}`;
+}
+
 export const markdownSchema = new Schema({
   nodes: {
     doc: { content: "block*" },
@@ -143,7 +160,7 @@ export const markdownSchema = new Schema({
         return [
           "img",
           {
-            src: node.attrs.src,
+            src: editorImageSrc(String(node.attrs.src ?? "")),
             alt: node.attrs.alt ?? "",
             title: node.attrs.title ?? null,
           },

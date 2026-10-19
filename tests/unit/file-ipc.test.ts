@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createSecureFileIpcController } from "../../src/electron/ipc";
+import {
+  createSecureFileIpcController,
+  resolveResourcePath,
+} from "../../src/electron/ipc";
 import { FileServiceError } from "../../src/electron/file-service";
 import { draftKeyForPath } from "../../src/electron/drafts";
 import { createHash } from "node:crypto";
@@ -154,6 +157,7 @@ interface ControllerOptions {
     updatedAt: number;
   }>;
   fingerprint?: { hash: string; mtimeMs: number; size: number };
+  writeExport?: (path: string, html: string) => Promise<void>;
 }
 
 function createController(options: ControllerOptions = {}) {
@@ -276,6 +280,7 @@ function createController(options: ControllerOptions = {}) {
       };
     },
     fingerprintFile: async () => ({ ...fingerprints }),
+    writeExport: options.writeExport,
     watch: (path: string, listener: (eventType: string) => void) => {
       const watcher = new FakeWatcher(
         path,
@@ -982,5 +987,76 @@ describe("canonical aliases and collision baselines", () => {
 
     expect(result).toMatchObject({ ok: true });
     expect(writes[0].expected).toBeUndefined();
+  });
+});
+
+describe("HTML export IPC", () => {
+  it("exports only to authorized save-dialog paths with valid content", async () => {
+    const window = new FakeWindow(1);
+    const exports: Array<{ path: string; html: string }> = [];
+    const { ipcMain } = createController(
+      {
+        windows: [window],
+        savePath: "/tmp/out.html",
+        writeExport: async (path, html) => {
+          exports.push({ path, html });
+        },
+      },
+    );
+
+    const denied = await ipcMain.invoke(markdeskChannels.exportHtml, {
+      sender: window.webContents,
+    }, "/tmp/out.html", "<p>x</p>");
+    expect(error(denied)?.code).toBe("invalid-path");
+    expect(exports).toEqual([]);
+
+    const chosen = await ipcMain.invoke(markdeskChannels.chooseExportLocation, {
+      sender: window.webContents,
+    }, "note.html");
+    expect(chosen).toMatchObject({ ok: true, value: "/tmp/out.html" });
+
+    const result = await ipcMain.invoke(markdeskChannels.exportHtml, {
+      sender: window.webContents,
+    }, "/tmp/out.html", "<p>clean</p>");
+    expect(result).toMatchObject({ ok: true, value: undefined });
+    expect(exports).toEqual([{ path: "/tmp/out.html", html: "<p>clean</p>" }]);
+
+    const badExtension = await ipcMain.invoke(markdeskChannels.exportHtml, {
+      sender: window.webContents,
+    }, "/tmp/out.exe", "<p>x</p>");
+    expect(error(badExtension)?.code).toBe("invalid-path");
+
+    const notString = await ipcMain.invoke(markdeskChannels.exportHtml, {
+      sender: window.webContents,
+    }, "/tmp/out.html", 123);
+    expect(error(notString)?.code).toBe("invalid-argument");
+  });
+});
+
+describe("markdesk-resource path resolution", () => {
+  const dirs = ["/docs"];
+
+  it("resolves relative images inside the document directory", () => {
+    expect(resolveResourcePath(dirs, "markdesk-resource:assets/pic.png"))
+      .toBe("/docs/assets/pic.png");
+    expect(resolveResourcePath(dirs, "markdesk-resource:photo.jpeg"))
+      .toBe("/docs/photo.jpeg");
+  });
+
+  it("rejects escape attempts, absolute paths, and non-image extensions", () => {
+    expect(resolveResourcePath(dirs, "markdesk-resource:../secret.png"))
+      .toBeNull();
+    expect(resolveResourcePath(dirs, "markdesk-resource:/etc/passwd.png"))
+      .toBeNull();
+    expect(resolveResourcePath(dirs, "markdesk-resource:file:///etc/passwd"))
+      .toBeNull();
+    expect(resolveResourcePath(dirs, "markdesk-resource:assets/app.js"))
+      .toBeNull();
+    expect(resolveResourcePath(dirs, "https://example.com/x.png")).toBeNull();
+  });
+
+  it("rejects everything when no document is open", () => {
+    expect(resolveResourcePath([], "markdesk-resource:assets/pic.png"))
+      .toBeNull();
   });
 });

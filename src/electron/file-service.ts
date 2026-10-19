@@ -454,3 +454,73 @@ export async function writeMarkdownFile(
     size: byteSize(content),
   };
 }
+
+const htmlExtensions = new Set([".html", ".htm"]);
+
+export function isHtmlPath(path: unknown): path is string {
+  if (typeof path !== "string" || path.length === 0) return false;
+  if (path.length > MAX_MARKDOWN_PATH_LENGTH) return false;
+  if (/[\0-\x1f\u007f]/u.test(path)) return false;
+  if (!isAbsolute(path) && !win32.isAbsolute(path)) return false;
+
+  const extension = extname(path).toLowerCase();
+  const windowsExtension = win32.extname(path).toLowerCase();
+  return htmlExtensions.has(extension) || htmlExtensions.has(windowsExtension);
+}
+
+/**
+ * 原子写入导出的 HTML 文件。与 Markdown 保存相同采用临时文件 +
+ * 重命名，失败时不截断已有内容；导出没有指纹冲突语义（总是覆盖）。
+ */
+export async function writeExportFile(
+  path: string,
+  html: string,
+  fileSystem: MarkdownFileSystem = nodeFileSystem,
+): Promise<void> {
+  if (!isHtmlPath(path)) {
+    throw new FileServiceError("invalid-path", "HTML 导出路径无效。");
+  }
+  if (unpairedSurrogate.test(html)) {
+    throw new FileServiceError(
+      "invalid-encoding",
+      "导出内容包含无法编码的独立 Unicode 代理项。",
+    );
+  }
+  if (byteSize(html) > MAX_MARKDOWN_BYTES) {
+    throw new FileServiceError(
+      "file-too-large",
+      "导出内容不能超过 10 MiB。",
+    );
+  }
+
+  const temporaryPath = `${path}${temporarySuffix}`;
+  let handle: MarkdownFileHandle | undefined;
+  let ownsTemporary = false;
+  try {
+    handle = await fileSystem.open(temporaryPath, "wx", 0o600);
+    ownsTemporary = true;
+    await handle.writeFile(html);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fileSystem.rename(temporaryPath, path);
+    ownsTemporary = false;
+  } catch (error) {
+    await closeQuietly(handle);
+    if (ownsTemporary) {
+      await removeOwnedTemporary(temporaryPath, fileSystem);
+    }
+    if (error instanceof FileServiceError) throw error;
+    throw new FileServiceError("write-failed", "写入导出文件失败。", error);
+  }
+
+  try {
+    await syncDirectory(path, fileSystem);
+  } catch (error) {
+    throw new FileServiceError(
+      "write-failed",
+      "已写入导出文件，但目录同步失败。",
+      error,
+    );
+  }
+}

@@ -22,6 +22,7 @@ import {
 } from "./components/Toolbar";
 import { WysiwygEditor } from "./components/WysiwygEditor";
 import { activeOutlinePosition, outlineFromDoc } from "./editor/outline";
+import { buildExportHtml } from "./editor/exportHtml";
 import {
   useDocumentStore,
   type EditorMode,
@@ -439,6 +440,34 @@ export default function App() {
     }
   }, [api, fileFingerprint, persistCurrentDocument]);
 
+  const exportDocument = useCallback(async (): Promise<void> => {
+    if (!api) return;
+    const revision = lifecycleRef.current.beginOperation();
+    if (revision === null) return;
+
+    setFileBusy(true);
+    setFileActionError(null);
+    try {
+      const state = useDocumentStore.getState();
+      const defaultName = state.fileName.replace(/\.(md|markdown)$/iu, "") +
+        ".html";
+      const target = await api.chooseExportLocation(defaultName);
+      if (!target) return;
+
+      const doc = state.mode === "source"
+        ? parseMarkdown(state.sourceText)
+        : state.doc;
+      const html = buildExportHtml(doc, resolvedTheme === "dark" ? "dark" : "light");
+      await api.exportHtml(target, html);
+      // 导出是只读的旁路操作：不改变活动文档的脏状态。
+    } catch (error) {
+      setFileActionError(toFileActionError(error));
+    } finally {
+      lifecycleRef.current.endOperation();
+      setFileBusy(false);
+    }
+  }, [api, resolvedTheme]);
+
   const reloadFromDisk = useCallback(async (): Promise<boolean> => {
     if (!api) return false;
     const path = useDocumentStore.getState().filePath;
@@ -759,11 +788,13 @@ export default function App() {
       else if (command === "open") requestFileAction({ type: "open" });
       else if (command === "save") void saveDocument();
       else if (command === "save-as") void saveDocumentAs();
+      else if (command === "export-html") void exportDocument();
       else if (command === "toggle-source") handleModeChange("source");
       else if (command === "toggle-read") handleModeChange("read");
       else if (command === "toggle-wysiwyg") handleModeChange("wysiwyg");
     },
     [
+      exportDocument,
       fileCollision,
       handleModeChange,
       openDocument,

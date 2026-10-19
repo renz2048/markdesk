@@ -1,4 +1,4 @@
-import { BrowserWindow, app, shell } from "electron";
+import { BrowserWindow, app, protocol, shell } from "electron";
 import { isAbsolute, join } from "node:path";
 import {
   createSecureFileIpcController,
@@ -27,6 +27,15 @@ if (userDataSwitch) {
     app.setPath("userData", overrideDir);
   }
 }
+
+// markdesk-resource 承载当前文档目录内的相对图片；特权注册（支持
+// fetch 语义、独立 CSP 判定）必须在 app ready 之前完成。
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "markdesk-resource",
+    privileges: { standard: false, supportFetchAPI: true, stream: false },
+  },
+]);
 
 const fileIpcController = createSecureFileIpcController({
   recentStoragePath: join(app.getPath("userData"), "recent-files.json"),

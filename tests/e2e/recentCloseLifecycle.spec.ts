@@ -155,6 +155,8 @@ test("dirty replacement supports cancel, save, and discard", async () => {
 });
 
 test("an opening document stays inert and a concurrent edit blocks replacement", async () => {
+  // 显式固定前置文件内容，避免依赖前序用例的磁盘写入时序。
+  await writeFile(alphaPath, "# Local edit\n", "utf8");
   await openRecent(alphaPath);
   await page.getByTestId("mode-wysiwyg").click();
   // 上一个用例已把 alpha 保存为 “# Local edit”；解析为 h1 标题后
@@ -168,14 +170,17 @@ test("an opening document stays inert and a concurrent edit blocks replacement",
   );
 
   // 打开流程的可见窗口只有几十毫秒；跨进程 evaluate 往返派发编辑事件
-  // 可能错过，因此在页面内用 MutationObserver 在 aria-busy 变为 true 的
-  // 同一帧同步派发，确保并发编辑可靠地打断打开。
+  // 可能错过，因此在页面内用 MutationObserver 在 aria-busy 首次变为
+  // true 的同一帧同步派发编辑事件（可靠打断），并记录 busy 曾出现，
+  // 因为打断成功后 busy 立即回到 false，事后断言观测不到。
   await page.evaluate(() => {
     const shell = document.querySelector('[data-testid="app-shell"]');
     if (!shell) throw new Error("app shell not found");
+    (window as unknown as { __busySeen?: boolean }).__busySeen = false;
     const observer = new MutationObserver(() => {
-      if (shell.getAttribute("aria-busy") === "true") {
-        observer.disconnect();
+      const seen = window as unknown as { __busySeen?: boolean };
+      if (shell.getAttribute("aria-busy") === "true" && !seen.__busySeen) {
+        seen.__busySeen = true;
         window.dispatchEvent(new CustomEvent("markdesk:document-edited"));
       }
     });
@@ -193,9 +198,8 @@ test("an opening document stays inert and a concurrent edit blocks replacement",
     },
     { path: betaPath, channel: markdeskChannels.openRecentFile },
   );
-  await expect(page.getByTestId("app-shell")).toHaveAttribute(
-    "aria-busy",
-    "true",
+  await page.waitForFunction(
+    () => (window as unknown as { __busySeen?: boolean }).__busySeen === true,
   );
   await expect(page.getByTestId("app-shell")).toHaveAttribute(
     "aria-live",

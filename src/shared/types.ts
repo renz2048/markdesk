@@ -98,6 +98,8 @@ export const markdeskChannels = {
   listRecoveryDrafts: "markdesk:list-recovery-drafts",
   readRecoveryDraft: "markdesk:read-recovery-draft",
   discardRecoveryDraft: "markdesk:discard-recovery-draft",
+  chooseExportLocation: "markdesk:choose-export-location",
+  exportHtml: "markdesk:export-html",
   recentFilesChanged: "markdesk:recent-files-changed",
   openRecentFile: "markdesk:open-recent-file",
   menuCommand: "markdesk:menu-command",
@@ -123,6 +125,8 @@ export interface MarkDeskRendererApi {
   listRecoveryDrafts(): Promise<RecoveryDraftSummary[]>;
   readRecoveryDraft(key: string): Promise<RecoveryDraft | null>;
   discardRecoveryDraft(key: string): Promise<void>;
+  chooseExportLocation(defaultName: string): Promise<string | null>;
+  exportHtml(path: string, html: string): Promise<void>;
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   onFileChanged(listener: (event: FileChangedEvent) => void): () => void;
   onOpenRecentFile(

@@ -16,6 +16,11 @@ const fileCommands: CommandMenuItem[] = [
     label: "另存为…",
     accelerator: "CmdOrCtrl+Shift+S",
   },
+  {
+    command: "export-html",
+    label: "导出 HTML…",
+    accelerator: "CmdOrCtrl+Shift+E",
+  },
 ];
 
 const modeCommands: CommandMenuItem[] = [

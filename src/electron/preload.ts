@@ -69,6 +69,10 @@ const rendererApi: MarkDeskRendererApi = {
     invokeResult(markdeskChannels.readRecoveryDraft, key),
   discardRecoveryDraft: (key: string): Promise<void> =>
     invokeResult(markdeskChannels.discardRecoveryDraft, key),
+  chooseExportLocation: (defaultName: string): Promise<string | null> =>
+    invokeResult(markdeskChannels.chooseExportLocation, defaultName),
+  exportHtml: (path: string, html: string): Promise<void> =>
+    invokeResult(markdeskChannels.exportHtml, path, html),
   requestClose: (): Promise<void> =>
     invokeResult(markdeskChannels.requestClose),
   cancelClose: (): Promise<void> =>
