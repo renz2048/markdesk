@@ -22,6 +22,8 @@ export interface DocumentStoreState {
   modeTransitionError: ModeTransitionError | null;
   sessionKey: string;
   sessionGeneration: number;
+  /** 用户是否已显式进入某个编辑会话（切换模式/打开文件/恢复草稿）。 */
+  editorEngaged: boolean;
   themePreference: ThemePreference;
   setDocument(doc: Node, dirty?: boolean): void;
   setMode(mode: EditorMode): void;
@@ -37,6 +39,8 @@ export interface DocumentStoreState {
   setFile(path: string | null, name: string): void;
   markSaved(): void;
   setThemePreference(themePreference: ThemePreference): void;
+  /** 从欢迎页显式开始写作（“新建文档”大按钮）。 */
+  beginEditorSession(): void;
 }
 
 const initialDoc = parseMarkdown("");
@@ -57,6 +61,7 @@ function transitionDocumentState(
         mode: nextMode,
         sourceText: serializeMarkdown(state.doc),
         modeTransitionError: null,
+        editorEngaged: true,
       };
     } catch {
       return {
@@ -75,6 +80,7 @@ function transitionDocumentState(
         mode: nextMode,
         doc: parseMarkdown(state.sourceText),
         modeTransitionError: null,
+        editorEngaged: true,
       };
     } catch {
       return {
@@ -87,7 +93,7 @@ function transitionDocumentState(
     }
   }
 
-  return { mode: nextMode, modeTransitionError: null };
+  return { mode: nextMode, modeTransitionError: null, editorEngaged: true };
 }
 
 export const useDocumentStore = create<DocumentStoreState>((set) => ({
@@ -100,6 +106,7 @@ export const useDocumentStore = create<DocumentStoreState>((set) => ({
   modeTransitionError: null,
   sessionKey: "session-0",
   sessionGeneration: 0,
+  editorEngaged: false,
   themePreference: "system",
   setDocument: (doc, dirty = true) =>
     set((state) => (state.mode === "source" ? {} : { doc, dirty })),
@@ -121,10 +128,14 @@ export const useDocumentStore = create<DocumentStoreState>((set) => ({
         modeTransitionError: null,
         sessionGeneration,
         sessionKey: `session-${sessionGeneration}`,
+        // 新文档会话默认回到欢迎页；恢复草稿等显式进入编辑的路径
+        // 通过 dirty/filePath/mode 切换自然隐藏欢迎页。
+        editorEngaged: false,
       };
     }),
   saveAs: (filePath, fileName) => set({ filePath, fileName }),
   setFile: (filePath, fileName) => set({ filePath, fileName }),
   markSaved: () => set({ dirty: false }),
   setThemePreference: (themePreference) => set({ themePreference }),
+  beginEditorSession: () => set({ editorEngaged: true }),
 }));

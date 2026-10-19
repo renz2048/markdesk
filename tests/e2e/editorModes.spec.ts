@@ -1,3 +1,5 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   _electron as electron,
@@ -10,9 +12,37 @@ type Page = Awaited<ReturnType<ElectronApplication["firstWindow"]>>;
 let app: ElectronApplication;
 let page: Page;
 
+/**
+ * 优雅关闭应用；若文档处于脏状态，关闭保护会拦截窗口关闭并使
+ * app.close() 挂起，此时退回到 SIGKILL（测试环境的编辑内容可丢弃）。
+ */
+async function closeMarkDesk(app: ElectronApplication): Promise<void> {
+  const proc = app.process();
+  const exited = new Promise<void>((resolve) => {
+    proc.once("exit", () => resolve());
+  });
+  await Promise.race([
+    app.close().catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 3000)),
+  ]);
+  if (proc.exitCode === null && !proc.killed) {
+    proc.kill("SIGKILL");
+  }
+  await exited;
+}
+
 test.beforeAll(async () => {
+  // 每次运行使用独立的用户数据目录，避免残留的最近文件/恢复草稿
+  // （尤其 SIGKILL 结束的脏文档会话）影响后续测试。
+  const userData = await mkdtemp(join(tmpdir(), "markdesk-editor-modes-"));
   app = await electron.launch({
-    args: [join(__dirname, "../..")],
+    args: [
+      join(__dirname, "../.."),
+      `--user-data-dir=${userData}`,
+      // WSL/CI 等无硬件 GPU 环境下禁用 GPU 进程，避免其崩溃级联拖垮
+      // network/zygote 服务；不影响任何安全配置。
+      "--disable-gpu",
+    ],
     env: { ...process.env, VITE_DEV_SERVER_URL: "" },
   });
   page = await app.firstWindow();
@@ -20,7 +50,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app.close();
+  await closeMarkDesk(app);
 });
 
 test("source and read modes preserve identity, remount sessions, and render safely", async () => {
@@ -41,7 +71,9 @@ test("source and read modes preserve identity, remount sessions, and render safe
 
   await page.getByTestId("mode-read").click();
   const firstReadView = page.getByTestId("read-view");
-  await expect(firstReadView.locator("h1")).toHaveText("Identitycallback");
+  // 输入中的 "\n" 是回车：标题行到换行即止，"callback" 是下一段落。
+  await expect(firstReadView.locator("h1")).toHaveText("Identity");
+  await expect(firstReadView.locator("p").first()).toHaveText("callback");
 
   await page.getByTestId("mode-source").click();
   const remountedContent = await sourceContent.elementHandle();

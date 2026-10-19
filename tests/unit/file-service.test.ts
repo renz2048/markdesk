@@ -413,8 +413,11 @@ describe("atomic Markdown writes", () => {
     );
 
     const tempPath = "/tmp/atomic.md.markdesk-tmp";
+    // 前两行分别来自测试自身的 fingerprint() 读取与 writeMarkdownFile
+    // 对既有内容的冲突校验读取；测试替身的 open() 总是记录默认 mode 0o600。
     expect(fileSystem.openCalls).toEqual([
-      { path: "/tmp/atomic.md", flags: "r" },
+      { path: "/tmp/atomic.md", flags: "r", mode: 0o600 },
+      { path: "/tmp/atomic.md", flags: "r", mode: 0o600 },
       { path: tempPath, flags: "wx", mode: 0o600 },
       { path: dirname("/tmp/atomic.md"), flags: "r", mode: 0o600 },
     ]);

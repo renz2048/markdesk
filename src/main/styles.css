@@ -733,6 +733,41 @@ body {
   opacity: 0.55;
 }
 
+.app-modal {
+  width: min(440px, 100%);
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 20px 45px rgb(0 0 0 / 22%);
+}
+
+.app-modal h2 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+}
+
+.app-modal p {
+  margin: 0 0 20px;
+  color: var(--muted-foreground);
+}
+
+.file-changed-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 8px 16px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--foreground);
+  font-size: 0.9rem;
+}
+
 @media (max-width: 720px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);

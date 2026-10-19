@@ -7,14 +7,24 @@ import { useEffect, useRef } from "react";
 interface Props {
   initialValue: string;
   sessionKey: string;
+  initialCursor: number;
   onChange(value: string): void;
+  onSelectionChange(cursor: number): void;
 }
 
-export function SourceEditor({ initialValue, sessionKey, onChange }: Props) {
+export function SourceEditor({
+  initialValue,
+  sessionKey,
+  initialCursor,
+  onChange,
+  onSelectionChange,
+}: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const initialValueRef = useRef(initialValue);
+  const initialCursorRef = useRef(initialCursor);
   const onChangeRef = useRef(onChange);
+  const onSelectionChangeRef = useRef(onSelectionChange);
 
   useEffect(() => {
     initialValueRef.current = initialValue;
@@ -22,7 +32,8 @@ export function SourceEditor({ initialValue, sessionKey, onChange }: Props) {
 
   useEffect(() => {
     onChangeRef.current = onChange;
-  }, [onChange]);
+    onSelectionChangeRef.current = onSelectionChange;
+  }, [onChange, onSelectionChange]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -30,6 +41,12 @@ export function SourceEditor({ initialValue, sessionKey, onChange }: Props) {
 
     const state = EditorState.create({
       doc: initialValueRef.current,
+      selection: {
+        anchor: Math.min(
+          Math.max(0, initialCursorRef.current),
+          initialValueRef.current.length,
+        ),
+      },
       extensions: [
         basicSetup,
         markdown({ base: markdownLanguage, codeLanguages: languages }),
@@ -42,6 +59,11 @@ export function SourceEditor({ initialValue, sessionKey, onChange }: Props) {
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             onChangeRef.current(update.state.doc.toString());
+          }
+          if (update.docChanged || update.selectionSet) {
+            onSelectionChangeRef.current(
+              update.state.selection.main.head,
+            );
           }
         }),
       ],

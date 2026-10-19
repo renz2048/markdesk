@@ -41,7 +41,8 @@ describe("outline", () => {
     const panel = OutlinePanel({
       doc,
       onJump: () => undefined,
-      activePos: 11,
+      // 第二个标题（## Second）在文档中的位置是 7。
+      activePos: 7,
     });
     const items = panel.props.children as Array<{
       props: { "aria-current"?: string; className: string };

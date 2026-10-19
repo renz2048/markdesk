@@ -68,17 +68,9 @@ function fenceFor(content: string, rawInfo: string): {
   info: string;
 } {
   const info = normalizeFenceInfo(rawInfo || "");
-  let character: "`" | "~";
-
-  if (info.includes("`")) {
-    character = "~";
-  } else if (info.includes("~")) {
-    character = "`";
-  } else {
-    const backtickLength = Math.max(3, longestCharacterRun(content, "`") + 1);
-    const tildeLength = Math.max(3, longestCharacterRun(content, "~") + 1);
-    character = backtickLength <= tildeLength ? "`" : "~";
-  }
+  // 反引号围栏的 info 串中不允许出现反引号，此时改用波浪线围栏；
+  // 其余情况一律使用反引号围栏，长度压过内容中最长的反引号连续段。
+  const character: "`" | "~" = info.includes("`") ? "~" : "`";
 
   const fence = character.repeat(
     Math.max(3, longestCharacterRun(content, character) + 1),
@@ -164,7 +156,7 @@ function tableCellMarkdown(cell: Node): string {
   if (!paragraph) return "";
 
   return markdownSerializer
-    .serialize(paragraph, { hardBreakNodeName: "hard_break" })
+    .serialize(paragraph)
     .replace(/\n$/, "");
 }
 
@@ -288,10 +280,11 @@ function paddedAlignmentMarker(
   alignment: TableAlignment,
   width: number,
 ): string {
-  const hyphens = "-".repeat(Math.max(1, width - 2));
-  if (alignment === "left") return `:${"-".repeat(Math.max(2, width - 1))}`;
-  if (alignment === "center") return `:${hyphens}:`;
-  return `${"-".repeat(Math.max(2, width - 1))}:`;
+  const base = alignmentMarker(alignment);
+  if (width <= base.length) return base;
+  if (alignment === "center") return `:${"-".repeat(width - 2)}:`;
+  if (alignment === "right") return `${"-".repeat(width - 1)}:`;
+  return `:${"-".repeat(width - 1)}`;
 }
 
 function tableMarkdown(table: Node): string {
@@ -314,8 +307,9 @@ function tableMarkdown(table: Node): string {
 
   const columnCount = Math.max(1, ...rows.map((cells) => cells.length));
   for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+    // 列宽只由转义后的单元格内容决定；分隔符在窄列时保持最小形态。
     widths[columnIndex] = Math.max(
-      alignmentMarker(tableAlignment(alignments[columnIndex] ?? "left")).length,
+      1,
       ...rows.map(
         (cells) => displayWidth(cells[columnIndex]?.content ?? ""),
       ),
@@ -348,6 +342,9 @@ export const markdownSerializer = new MarkdownSerializer(
   {
     doc(state, node) {
       state.renderContent(node);
+    },
+    text(state, node) {
+      state.text(node.text ?? "");
     },
     paragraph(state, node) {
       state.renderInline(node);
@@ -420,8 +417,9 @@ export const markdownSerializer = new MarkdownSerializer(
       open(_state, _mark, parent, index) {
         return inlineCodeDelimiter(parent, index, "open");
       },
+      // 关闭侧的 index 指向代码文本之后的节点，与库默认实现一致回退一位。
       close(_state, _mark, parent, index) {
-        return inlineCodeDelimiter(parent, index, "close");
+        return inlineCodeDelimiter(parent, index - 1, "close");
       },
       escape: false,
     },
@@ -436,10 +434,17 @@ export const markdownSerializer = new MarkdownSerializer(
       },
     },
   },
+  // 紧凑列表是 MarkDesk 的规范序列化形式；模型中没有 loose/tight 之分。
+  // 运行时 renderList 会读取 options.tightLists（prosemirror-markdown
+  // 1.13.0 的构造器类型未声明该字段），因此这里做一次显式断言。
+  { tightLists: true } as unknown as ConstructorParameters<
+    typeof MarkdownSerializer
+  >[2],
 );
 
 export function serializeMarkdown(doc: Node): string {
-  return markdownSerializer.serialize(doc, {
-    hardBreakNodeName: "hard_break",
-  });
+  const output = markdownSerializer.serialize(doc);
+  if (output.length === 0) return output;
+  // 保存的 Markdown 文件以单个换行符结尾，与测试规定的规范形式一致。
+  return output.endsWith("\n") ? output : `${output}\n`;
 }

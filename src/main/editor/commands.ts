@@ -1,12 +1,15 @@
 import {
-  Command,
   setBlockType,
   toggleMark,
   wrapIn,
 } from "prosemirror-commands";
 import { wrapInList } from "prosemirror-schema-list";
-import type { Mark, Node as PMNode } from "prosemirror-model";
-import type { EditorState, ResolvedPos, Transaction } from "prosemirror-state";
+import type { Mark, Node as PMNode, ResolvedPos } from "prosemirror-model";
+import type {
+  Command,
+  EditorState,
+  Transaction,
+} from "prosemirror-state";
 import { markdownSchema } from "../../markdown/schema";
 import { normalizeLinkHref } from "../../markdown/urlPolicy";
 
@@ -36,7 +39,10 @@ export function toggleMarkByName(name: string): Command {
 }
 
 export function setLink(href: string): Command {
-  const normalizedHref = normalizeLinkHref(href);
+  // 先验证（非法方案在此抛出），通过后保留作者输入的形式，
+  // 避免 URL API 规范化（如自动补结尾斜杠）改写链接。
+  normalizeLinkHref(href);
+  const normalizedHref = href.trim();
 
   return (state: EditorState, dispatch?: (transaction: Transaction) => void) => {
     if (dispatch) {
@@ -58,8 +64,8 @@ export function setLink(href: string): Command {
         );
       } else {
         for (const range of state.selection.ranges) {
-          const from = Math.min(range.from, range.to);
-          const to = Math.max(range.from, range.to);
+          const from = Math.min(range.$from.pos, range.$to.pos);
+          const to = Math.max(range.$from.pos, range.$to.pos);
           let markedText = false;
 
           state.doc.nodesBetween(from, to, (node: PMNode, pos: number) => {

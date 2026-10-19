@@ -96,7 +96,10 @@ export function normalizeImageSrc(src: string): string {
 
 export function safeLinkHref(href: string): string {
   try {
-    return normalizeLinkHref(href);
+    normalizeLinkHref(href);
+    // 解析边界只做验证并保留作者书写的形式（normalize 会经 URL API 规范化，
+    // 例如自动补全结尾斜杠、编码空格），保证 Markdown 逐字往返。
+    return href.trim();
   } catch {
     return "";
   }
@@ -104,7 +107,8 @@ export function safeLinkHref(href: string): string {
 
 export function safeImageSrc(src: string): string {
   try {
-    return normalizeImageSrc(src);
+    normalizeImageSrc(src);
+    return src.trim();
   } catch {
     return "";
   }

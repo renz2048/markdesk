@@ -1,5 +1,5 @@
 import { BrowserWindow, app, shell } from "electron";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   createSecureFileIpcController,
   sendMenuCommand,
@@ -15,8 +15,22 @@ import {
   shouldOpenExternalUrl,
 } from "./security";
 
+// Honor an explicit --user-data-dir switch so end-to-end tests can run the
+// app against an isolated profile directory. Must run before any
+// app.getPath("userData") read below.
+const userDataSwitch = process.argv
+  .slice(2)
+  .find((argument) => argument.startsWith("--user-data-dir="));
+if (userDataSwitch) {
+  const overrideDir = userDataSwitch.slice("--user-data-dir=".length);
+  if (isAbsolute(overrideDir)) {
+    app.setPath("userData", overrideDir);
+  }
+}
+
 const fileIpcController = createSecureFileIpcController({
   recentStoragePath: join(app.getPath("userData"), "recent-files.json"),
+  draftStoragePath: app.getPath("userData"),
 });
 let currentRecentFiles: RecentFileStatus[] = [];
 
@@ -81,7 +95,9 @@ export function createMainWindow(): BrowserWindow {
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) void win.loadURL(devServerUrl);
-  else void win.loadFile(join(__dirname, "../dist/index.html"));
+  // 编译产物位于 dist-electron/electron/（tsconfig.electron.json 的 rootDir
+  // 是 src），渲染端构建输出在 markdesk/dist/，因此要回退两级。
+  else void win.loadFile(join(__dirname, "../../dist/index.html"));
 
   fileIpcController.protectWindowClose(win);
   return win;

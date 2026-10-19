@@ -159,7 +159,9 @@ describe("editor modes", () => {
       createElement(SourceEditor, {
         initialValue: "# Source\n",
         sessionKey: "session-1",
+        initialCursor: 0,
         onChange: () => undefined,
+        onSelectionChange: () => undefined,
       }),
     );
     expect(source).toContain('data-testid="source-editor"');

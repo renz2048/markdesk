@@ -10,6 +10,9 @@ import {
   type MarkDeskRendererApi,
   type OpenRecentFileEvent,
   type RecentFileStatus,
+  type RecoveryDraft,
+  type RecoveryDraftInput,
+  type RecoveryDraftSummary,
 } from "../shared/types";
 
 async function invokeResult<TValue>(
@@ -23,9 +26,13 @@ async function invokeResult<TValue>(
 
   if (result && result.ok) return result.value;
   if (result && !result.ok) {
-    const error = new Error(result.error.message);
+    // contextBridge 跨上下文传播异常时只保留 message，自定义属性
+    // （如 code）会被剥离；因此把错误码编码为 message 的首行，
+    // 由渲染器的 toFileActionError 解码。
+    const error = new Error(
+      `${result.error.code}\n${result.error.message}`,
+    );
     error.name = "MarkDeskIpcError";
-    Object.assign(error, { code: result.error.code });
     throw error;
   }
 
@@ -54,6 +61,14 @@ const rendererApi: MarkDeskRendererApi = {
     invokeResult(markdeskChannels.readRecentFile, path),
   clearRecentFiles: (): Promise<void> =>
     invokeResult(markdeskChannels.clearRecentFiles),
+  saveRecoveryDraft: (draft: RecoveryDraftInput): Promise<string> =>
+    invokeResult(markdeskChannels.saveRecoveryDraft, draft),
+  listRecoveryDrafts: (): Promise<RecoveryDraftSummary[]> =>
+    invokeResult(markdeskChannels.listRecoveryDrafts),
+  readRecoveryDraft: (key: string): Promise<RecoveryDraft | null> =>
+    invokeResult(markdeskChannels.readRecoveryDraft, key),
+  discardRecoveryDraft: (key: string): Promise<void> =>
+    invokeResult(markdeskChannels.discardRecoveryDraft, key),
   requestClose: (): Promise<void> =>
     invokeResult(markdeskChannels.requestClose),
   cancelClose: (): Promise<void> =>

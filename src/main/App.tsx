@@ -37,6 +37,8 @@ import type {
   MenuCommand,
   NewlinePreference,
   RecentFileStatus,
+  RecoveryDraft,
+  RecoveryDraftInput,
 } from "../shared/types";
 
 const modeLabels = {
@@ -50,6 +52,14 @@ type PendingFileAction =
   | { type: "new" }
   | { type: "open"; path?: string }
   | { type: "close" };
+
+const DRAFT_SAVE_DELAY_MS = 500;
+
+interface DraftQueueState {
+  queue: Promise<void>;
+  version: number;
+  activeKey: string | null;
+}
 
 const themeLabels: Record<ThemePreference, string> = {
   light: "浅色",
@@ -82,6 +92,9 @@ export default function App() {
     (state) => state.modeTransitionError,
   );
   const sessionKey = useDocumentStore((state) => state.sessionKey);
+  const editorEngaged = useDocumentStore(
+    (state) => state.editorEngaged,
+  );
   const themePreference = useDocumentStore(
     (state) => state.themePreference,
   );
@@ -94,10 +107,24 @@ export default function App() {
   const lifecycleRef = useRef(new FileLifecycleController());
   const pendingActionRef = useRef<PendingFileAction | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const draftQueueRef = useRef<DraftQueueState>({
+    queue: Promise.resolve(),
+    version: 0,
+    activeKey: null,
+  });
+  const restoreDraftViewRef = useRef<{
+    mode: EditorMode;
+    sessionKey: string;
+    cursor: number;
+    scrollTop: number;
+  } | null>(null);
   const api = typeof window === "undefined" ? undefined : window.markdesk;
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [selectionPosition, setSelectionPosition] = useState(0);
+  const [sourceCursorPosition, setSourceCursorPosition] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   const [fileFingerprint, setFileFingerprint] =
     useState<FileFingerprint | null>(null);
@@ -110,9 +137,43 @@ export default function App() {
   const [recentFiles, setRecentFiles] = useState<RecentFileStatus[]>([]);
   const [pendingFileAction, setPendingFileAction] =
     useState<PendingFileAction | null>(null);
+  const [recoveryDraft, setRecoveryDraft] = useState<RecoveryDraft | null>(
+    null,
+  );
+  const [externalFileChange, setExternalFileChange] = useState<string | null>(
+    null,
+  );
+  const [fileCollision, setFileCollision] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectionPosition(0);
+    setSourceCursorPosition(0);
+    setScrollTop(0);
+  }, [mode, sessionKey]);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    // scroll 事件不冒泡，这里用捕获阶段监听编辑器容器的滚动位置。
+    const handleScroll = (event: Event): void => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.classList.contains("editor")
+      ) {
+        setScrollTop(target.scrollTop);
+      }
+    };
+    document.addEventListener("scroll", handleScroll, true);
+    return () => document.removeEventListener("scroll", handleScroll, true);
+  }, []);
+
+  useEffect(() => {
+    const pending = restoreDraftViewRef.current;
+    if (!pending || pending.sessionKey !== sessionKey) return;
+    restoreDraftViewRef.current = null;
+    const editor = workspaceRef.current?.querySelector<HTMLElement>(".editor");
+    if (editor) editor.scrollTop = pending.scrollTop;
   }, [mode, sessionKey]);
 
   useLayoutEffect(() => {
@@ -252,6 +313,45 @@ export default function App() {
     }
   }, [api]);
 
+  const queueDraftSave = useCallback(
+    (input: RecoveryDraftInput): void => {
+      if (!api) return;
+      const drafts = draftQueueRef.current;
+      drafts.version += 1;
+      const version = drafts.version;
+      drafts.queue = drafts.queue
+        .then(() => api.saveRecoveryDraft(input))
+        .then((key) => {
+          // 只有最新一次排队保存才能登记活动键，避免旧结果覆盖新状态。
+          if (draftQueueRef.current.version === version) {
+            draftQueueRef.current.activeKey = key;
+          }
+        })
+        .catch(() => {
+          // 恢复草稿是尽力而为的保障，失败不打断编辑。
+        });
+    },
+    [api],
+  );
+
+  const discardActiveDraft = useCallback((): void => {
+    if (!api) return;
+    const drafts = draftQueueRef.current;
+    const key = drafts.activeKey;
+    drafts.activeKey = null;
+    if (!key) return;
+    const version = drafts.version;
+    drafts.queue = drafts.queue
+      .then(() => {
+        // 丢弃之后若有新的草稿保存排队，则保留新草稿。
+        if (draftQueueRef.current.version !== version) return;
+        return api.discardRecoveryDraft(key);
+      })
+      .catch(() => {
+        // 残留草稿只影响下次启动的恢复提示，不影响数据安全。
+      });
+  }, [api]);
+
   const persistCurrentDocument = useCallback(
     async (
       path: string,
@@ -275,7 +375,13 @@ export default function App() {
       try {
         result = await api?.writeFile(path, content, expected);
       } catch (error) {
-        setFileActionError(toFileActionError(error));
+        const actionError = toFileActionError(error);
+        if (actionError.code === "file-changed") {
+          // 磁盘内容与打开时不一致：交给冲突对话框选择处理方式。
+          setFileCollision(path);
+        } else {
+          setFileActionError(actionError);
+        }
         return false;
       }
       if (!result) return false;
@@ -293,9 +399,11 @@ export default function App() {
       setNewlinePreference((current) =>
         content.includes("\r\n") ? "crlf" : current,
       );
+      setExternalFileChange(null);
+      discardActiveDraft();
       return lifecycleRef.current.isCurrent(revision);
     },
-    [api, newlinePreference],
+    [api, newlinePreference, discardActiveDraft],
   );
 
   const saveDocument = useCallback(async (): Promise<boolean> => {
@@ -331,6 +439,107 @@ export default function App() {
     }
   }, [api, fileFingerprint, persistCurrentDocument]);
 
+  const reloadFromDisk = useCallback(async (): Promise<boolean> => {
+    if (!api) return false;
+    const path = useDocumentStore.getState().filePath;
+    if (!path) return false;
+    const revision = lifecycleRef.current.beginOperation();
+    if (revision === null) return false;
+
+    setFileBusy(true);
+    setFileActionError(null);
+    try {
+      const file = await api.readFile(path);
+      let parsed: ReturnType<typeof parseMarkdown>;
+      try {
+        parsed = parseMarkdown(file.content);
+      } catch (error) {
+        setFileActionError(toFileActionError(error, "parse"));
+        return false;
+      }
+      if (!lifecycleRef.current.isCurrent(revision)) return false;
+      useDocumentStore.getState().replaceDocument({
+        doc: parsed,
+        filePath: file.path,
+        fileName: fileNameFromPath(file.path),
+        dirty: false,
+      });
+      setFileFingerprint({
+        hash: file.hash,
+        mtimeMs: file.mtimeMs,
+        size: file.size,
+      });
+      setNewlinePreference(file.newline);
+      setExternalFileChange(null);
+      discardActiveDraft();
+      return true;
+    } catch (error) {
+      setFileActionError(toFileActionError(error));
+      return false;
+    } finally {
+      lifecycleRef.current.endOperation();
+      setFileBusy(false);
+    }
+  }, [api, discardActiveDraft]);
+
+  const resolveFileCollision = useCallback(
+    async (choice: "overwrite" | "reload" | "save-as"): Promise<void> => {
+      const path = fileCollision;
+      if (!path || !api) return;
+
+      if (choice === "reload") {
+        setFileCollision(null);
+        await reloadFromDisk();
+        return;
+      }
+
+      const revision = lifecycleRef.current.beginOperation();
+      if (revision === null) return;
+
+      setFileBusy(true);
+      setFileActionError(null);
+      try {
+        if (choice === "overwrite") {
+          // 先重新读取以刷新主进程的基线指纹，再用最新指纹覆盖写入。
+          const file = await api.readFile(path);
+          const saved = await persistCurrentDocument(
+            path,
+            {
+              hash: file.hash,
+              mtimeMs: file.mtimeMs,
+              size: file.size,
+            },
+            revision,
+          );
+          if (saved) setFileCollision(null);
+        } else {
+          const state = useDocumentStore.getState();
+          const target = await api.chooseSaveLocation(state.fileName);
+          if (!target) return;
+          const saved = await persistCurrentDocument(
+            target,
+            fileFingerprint ?? undefined,
+            revision,
+          );
+          if (saved) setFileCollision(null);
+        }
+      } catch (error) {
+        setFileActionError(toFileActionError(error));
+        setFileCollision(null);
+      } finally {
+        lifecycleRef.current.endOperation();
+        setFileBusy(false);
+      }
+    },
+    [
+      api,
+      fileCollision,
+      fileFingerprint,
+      persistCurrentDocument,
+      reloadFromDisk,
+    ],
+  );
+
   const handleDocumentChange = useCallback(
     (nextDoc: Parameters<typeof setDocument>[0]) => {
       lifecycleRef.current.markEdited();
@@ -346,6 +555,102 @@ export default function App() {
     },
     [setSourceText],
   );
+
+  useEffect(() => {
+    if (!api || !dirty) return;
+    let markdown: string;
+    try {
+      markdown = mode === "source" ? sourceText : serializeMarkdown(doc);
+    } catch {
+      // 序列化失败时保留上一次草稿内容。
+      return;
+    }
+    const cursor = mode === "source"
+      ? sourceCursorPosition
+      : mode === "wysiwyg"
+        ? selectionPosition
+        : 0;
+    const timer = setTimeout(() => {
+      queueDraftSave({
+        path: filePath,
+        fileName,
+        markdown,
+        mode,
+        cursor,
+        scrollTop,
+      });
+    }, DRAFT_SAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [
+    api,
+    dirty,
+    doc,
+    sourceText,
+    mode,
+    filePath,
+    fileName,
+    selectionPosition,
+    sourceCursorPosition,
+    scrollTop,
+    queueDraftSave,
+  ]);
+
+  useEffect(() => {
+    if (!api) return;
+    let cancelled = false;
+    void api.listRecoveryDrafts()
+      .then(async (summaries) => {
+        if (cancelled || summaries.length === 0) return;
+        const draft = await api.readRecoveryDraft(summaries[0].key);
+        if (cancelled || !draft) return;
+        setRecoveryDraft(draft);
+      })
+      .catch(() => {
+        // 草稿列表读取失败时静默跳过恢复提示。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  const restoreRecoveryDraft = useCallback(
+    async (draft: RecoveryDraft): Promise<void> => {
+      setRecoveryDraft(null);
+      try {
+        const parsed = parseMarkdown(draft.markdown);
+        useDocumentStore.getState().replaceDocument({
+          doc: parsed,
+          filePath: draft.path,
+          fileName: draft.fileName,
+          dirty: true,
+        });
+        if (draft.mode !== "wysiwyg") {
+          useDocumentStore.getState().transitionMode(draft.mode);
+        }
+        draftQueueRef.current.activeKey = draft.key;
+        restoreDraftViewRef.current = {
+          mode: draft.mode,
+          sessionKey: useDocumentStore.getState().sessionKey,
+          cursor: draft.cursor,
+          scrollTop: draft.scrollTop,
+        };
+      } catch {
+        setFileActionError({
+          code: "parse",
+          message: "恢复草稿解析失败，已忽略该草稿。",
+        });
+        void api?.discardRecoveryDraft(draft.key).catch(() => undefined);
+      }
+    },
+    [api],
+  );
+
+  const skipRecoveryDraft = useCallback((): void => {
+    const draft = recoveryDraft;
+    setRecoveryDraft(null);
+    if (!draft || !api) return;
+    void api.discardRecoveryDraft(draft.key).catch(() => undefined);
+  }, [api, recoveryDraft]);
 
   const saveDocumentAs = useCallback(async (): Promise<boolean> => {
     const revision = lifecycleRef.current.beginOperation();
@@ -427,23 +732,45 @@ export default function App() {
     }
   }, [finishPendingFileAction, saveDocument]);
 
+  const handleModeChange = useCallback(
+    (nextMode: EditorMode): void => {
+      // 规范 9.2：应用以未命名空文档启动；从欢迎页切换编辑模式时
+      // 先落一个未命名文档，再进入目标模式。
+      const state = useDocumentStore.getState();
+      if (state.filePath === null && !state.dirty) {
+        createUntitledDocument();
+      }
+      transitionMode(nextMode);
+    },
+    [createUntitledDocument, transitionMode],
+  );
+
   const handleMenuCommand = useCallback(
     (command: MenuCommand) => {
-      if (lifecycleRef.current.busy || pendingActionRef.current) return;
+      if (
+        lifecycleRef.current.busy ||
+        pendingActionRef.current ||
+        fileCollision !== null ||
+        recoveryDraft !== null
+      ) {
+        return;
+      }
       if (command === "new") requestFileAction({ type: "new" });
       else if (command === "open") requestFileAction({ type: "open" });
       else if (command === "save") void saveDocument();
       else if (command === "save-as") void saveDocumentAs();
-      else if (command === "toggle-source") transitionMode("source");
-      else if (command === "toggle-read") transitionMode("read");
-      else if (command === "toggle-wysiwyg") transitionMode("wysiwyg");
+      else if (command === "toggle-source") handleModeChange("source");
+      else if (command === "toggle-read") handleModeChange("read");
+      else if (command === "toggle-wysiwyg") handleModeChange("wysiwyg");
     },
     [
+      fileCollision,
+      handleModeChange,
       openDocument,
+      recoveryDraft,
       requestFileAction,
       saveDocument,
       saveDocumentAs,
-      transitionMode,
     ],
   );
 
@@ -500,10 +827,7 @@ export default function App() {
     if (!api) return;
     return api.onFileChanged((event) => {
       if (useDocumentStore.getState().filePath === event.path) {
-        setFileActionError({
-          code: "file-changed",
-          message: "文件已在其他程序中修改，保存前会进行冲突检查。",
-        });
+        setExternalFileChange(event.path);
       }
     });
   }, [api]);
@@ -517,13 +841,25 @@ export default function App() {
     }
   }, [api]);
 
-  const showWelcome = filePath === null && !dirty;
-  const closeProtectionVisible = pendingFileAction !== null && dirty;
+  // 欢迎页在干净且未进入编辑会话时显示；切换模式会建立未命名编辑会话
+  // （规范 9.2），而“新建”始终回到欢迎页。
+  const showWelcome =
+    filePath === null && !dirty && !editorEngaged;
+  const modalNoticeVisible =
+    fileCollision !== null || recoveryDraft !== null;
+  const closeProtectionVisible =
+    pendingFileAction !== null && dirty && !modalNoticeVisible;
+  const pendingRestoreView = restoreDraftViewRef.current;
+  const restoredCursor =
+    pendingRestoreView && pendingRestoreView.mode === mode
+      ? pendingRestoreView.cursor
+      : 0;
 
   useEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
-    const shouldInertBackground = fileBusy || closeProtectionVisible;
+    const shouldInertBackground =
+      fileBusy || closeProtectionVisible || modalNoticeVisible;
     if (shouldInertBackground) {
       if (
         !restoreFocusRef.current &&
@@ -539,7 +875,7 @@ export default function App() {
       restoreFocusRef.current = null;
       if (restoreFocus?.isConnected) restoreFocus.focus();
     }
-  }, [fileBusy, closeProtectionVisible]);
+  }, [fileBusy, closeProtectionVisible, modalNoticeVisible]);
 
   return (
     <>
@@ -548,7 +884,9 @@ export default function App() {
         className="app-shell"
         data-testid="app-shell"
         aria-busy={
-          fileBusy || closeProtectionVisible ? "true" : "false"
+          fileBusy || closeProtectionVisible || modalNoticeVisible
+            ? "true"
+            : "false"
         }
         aria-live="polite"
       >
@@ -559,7 +897,7 @@ export default function App() {
             <ViewBar
               mode={mode}
               themePreference={themePreference}
-              onModeChange={transitionMode}
+              onModeChange={handleModeChange}
               onThemeChange={setThemePreference}
               onNewDocument={() => requestFileAction({ type: "new" })}
               onOpenDocument={() => requestFileAction({ type: "open" })}
@@ -568,7 +906,7 @@ export default function App() {
               fileBusy={fileBusy}
               actionPending={pendingFileAction !== null}
             />
-            <div className="workspace" data-testid="workspace">
+            <div className="workspace" data-testid="workspace" ref={workspaceRef}>
               <OutlinePanel
                 doc={doc}
                 onJump={jumpToHeading}
@@ -596,11 +934,41 @@ export default function App() {
                     {fileActionError.message}
                   </p>
                 ) : null}
+                {externalFileChange !== null &&
+                    externalFileChange === filePath ? (
+                  <div
+                    className="file-changed-notice"
+                    role="status"
+                    data-testid="file-changed-notice"
+                  >
+                    <span>文件已在其他程序中修改，保存前会进行冲突检查。</span>
+                    <button
+                      type="button"
+                      className="mode-button"
+                      data-testid="file-changed-reload"
+                      disabled={fileBusy}
+                      onClick={() => {
+                        if (useDocumentStore.getState().dirty) {
+                          setFileCollision(externalFileChange);
+                        } else {
+                          void reloadFromDisk();
+                        }
+                      }}
+                    >
+                      重新加载
+                    </button>
+                  </div>
+                ) : null}
                 {showWelcome ? (
                   <WelcomeView
                     recentFiles={recentFiles}
                     fileBusy={fileBusy || pendingFileAction !== null}
-                    onNewDocument={() => requestFileAction({ type: "new" })}
+                    onNewDocument={() => {
+                      // 欢迎页的“新建文档”直接进入编辑器开始写作；
+                      // 视图栏的“新建”则保持在欢迎页。
+                      requestFileAction({ type: "new" });
+                      useDocumentStore.getState().beginEditorSession();
+                    }}
                     onOpenDocument={() => requestFileAction({ type: "open" })}
                     onOpenRecentFile={(path) =>
                       requestFileAction({ type: "open", path })}
@@ -609,14 +977,17 @@ export default function App() {
                 ) : mode === "wysiwyg" ? (
                   <WysiwygEditor
                     initialDoc={doc}
+                    initialCursor={restoredCursor}
                     sessionKey={sessionKey}
                     onChange={handleDocumentChange}
                   />
                 ) : mode === "source" ? (
                   <SourceEditor
                     initialValue={sourceText}
+                    initialCursor={restoredCursor}
                     sessionKey={sessionKey}
                     onChange={handleSourceChange}
+                    onSelectionChange={setSourceCursorPosition}
                   />
                 ) : (
                   <ReadView doc={doc} />
@@ -636,6 +1007,23 @@ export default function App() {
           onSave={() => void saveAndContinue()}
           onDiscard={() => void finishPendingFileAction(pendingFileAction)}
           onCancel={cancelPendingFileAction}
+        />
+      ) : null}
+      {recoveryDraft !== null ? (
+        <RecoveryDialog
+          draft={recoveryDraft}
+          onRestore={() => void restoreRecoveryDraft(recoveryDraft)}
+          onSkip={skipRecoveryDraft}
+        />
+      ) : null}
+      {fileCollision !== null ? (
+        <FileCollisionDialog
+          fileName={fileName}
+          busy={fileBusy}
+          onOverwrite={() => void resolveFileCollision("overwrite")}
+          onReload={() => void resolveFileCollision("reload")}
+          onSaveAs={() => void resolveFileCollision("save-as")}
+          onCancel={() => setFileCollision(null)}
         />
       ) : null}
     </>
@@ -961,6 +1349,144 @@ function CloseProtectionDialog({
           <button
             type="button"
             data-testid="close-protection-cancel"
+            disabled={busy}
+            onClick={onCancel}
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecoveryDialog({
+  draft,
+  onRestore,
+  onSkip,
+}: {
+  draft: RecoveryDraft;
+  onRestore(): void;
+  onSkip(): void;
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="dialog-backdrop" data-testid="recovery-backdrop">
+      <div
+        ref={dialogRef}
+        className="app-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="recovery-title"
+        aria-describedby="recovery-description"
+        data-testid="recovery-dialog"
+        tabIndex={-1}
+      >
+        <h2 id="recovery-title">检测到未保存的恢复草稿</h2>
+        <p id="recovery-description">
+          上次编辑“{draft.fileName}”时可能未正常退出。是否恢复未保存的内容？
+        </p>
+        <div className="dialog-actions" role="group" aria-label="恢复草稿操作">
+          <button
+            type="button"
+            className="primary-dialog-button"
+            data-testid="recovery-restore"
+            autoFocus
+            onClick={onRestore}
+          >
+            恢复内容
+          </button>
+          <button
+            type="button"
+            data-testid="recovery-discard"
+            onClick={onSkip}
+          >
+            放弃草稿
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FileCollisionDialog({
+  fileName,
+  busy,
+  onOverwrite,
+  onReload,
+  onSaveAs,
+  onCancel,
+}: {
+  fileName: string;
+  busy: boolean;
+  onOverwrite(): void;
+  onReload(): void;
+  onSaveAs(): void;
+  onCancel(): void;
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="dialog-backdrop" data-testid="file-collision-backdrop">
+      <div
+        ref={dialogRef}
+        className="app-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="file-collision-title"
+        aria-describedby="file-collision-description"
+        data-testid="file-collision-dialog"
+        tabIndex={-1}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !busy) {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <h2 id="file-collision-title">文件已被外部修改</h2>
+        <p id="file-collision-description">
+          “{fileName}”在磁盘上的内容已变化。请选择如何处理本地未保存的更改。
+        </p>
+        <div className="dialog-actions" role="group" aria-label="冲突处理操作">
+          <button
+            type="button"
+            className="primary-dialog-button"
+            data-testid="file-collision-overwrite"
+            disabled={busy}
+            autoFocus
+            onClick={onOverwrite}
+          >
+            覆盖外部版本
+          </button>
+          <button
+            type="button"
+            data-testid="file-collision-reload"
+            disabled={busy}
+            onClick={onReload}
+          >
+            重新加载文件
+          </button>
+          <button
+            type="button"
+            data-testid="file-collision-save-as"
+            disabled={busy}
+            onClick={onSaveAs}
+          >
+            另存为新文件
+          </button>
+          <button
+            type="button"
+            data-testid="file-collision-cancel"
             disabled={busy}
             onClick={onCancel}
           >

@@ -118,12 +118,21 @@ export const markdownSchema = new Schema({
       code: true,
       attrs: { source: { default: "" } },
       toDOM(node) {
-        return ["pre", { "data-markdesk-raw": "true" }, node.attrs.source];
+        const source = String(node.attrs.source ?? "");
+        // HTML 注释展示内部文本（它是作者笔记）；其余受保护原文逐字展示。
+        // attrs.source 始终保留完整原文，序列化往返不受此展示层影响。
+        const comment = /^<!--\s*([\s\S]*?)\s*-->$/u.exec(source);
+        return [
+          "pre",
+          { "data-markdesk-raw": "true" },
+          comment ? comment[1] : source,
+        ];
       },
     },
     text: { group: "inline" },
     image: {
       inline: true,
+      group: "inline",
       atom: true,
       attrs: {
         src: {},

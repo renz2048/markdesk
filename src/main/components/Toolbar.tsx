@@ -8,7 +8,7 @@ import {
 } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import type { Command } from "prosemirror-commands";
+import type { Command } from "prosemirror-state";
 import { TextSelection } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import {

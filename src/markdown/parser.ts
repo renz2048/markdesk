@@ -62,6 +62,9 @@ function recognizeTaskLists(state: MarkdownCoreState) {
 
     token.attrSet("task", marker[1].trim() ? "done" : "todo");
     firstChild.content = firstChild.content.slice(marker[0].length);
+    // 同步清除 inline token 自身的 content，防止任务列表插件再次识别
+    // 标记并注入 html_inline 复选框 token。
+    inline.content = inline.content.slice(marker[0].length);
     if (firstChild.content === "") {
       inline.children.splice(0, 1);
     }
@@ -113,6 +116,9 @@ const taskMarkdownIt = markdownIt.use(taskLists, {
 // Keep destinations tokenized here and apply MarkDesk's context-sensitive
 // link/image allowlists at the model boundary below.
 taskMarkdownIt.validateLink = () => true;
+// markdown-it 默认会对 URL 做百分号编码（例如 data: 图片里的尖括号），
+// 与逐字往返的契约冲突；验证交给 normalizeLinkHref/normalizeImageSrc。
+taskMarkdownIt.normalizeLink = (url: string) => url;
 // Insert before the task-list renderer plugin's own inline transformation so
 // MarkDesk can move the source marker into list_item.attrs without depending
 // on plugin-specific checkbox token shapes.
@@ -121,6 +127,17 @@ taskMarkdownIt.core.ruler.after(
   "markdesk_task_lists",
   recognizeTaskLists,
 );
+
+interface ParseStateLike {
+  openNode(type: unknown, attrs: unknown): void;
+  addText(text: string): void;
+  closeNode(): void;
+}
+
+interface FenceTokenShape {
+  content: string;
+  info: string;
+}
 
 export const markdownParser = new MarkdownParser(markdownSchema, taskMarkdownIt, {
   blockquote: { block: "blockquote" },
@@ -197,7 +214,7 @@ export const markdownParser = new MarkdownParser(markdownSchema, taskMarkdownIt,
   em: { mark: "em" },
   s: { mark: "strikethrough" },
   code_inline: { mark: "code" },
-  link_open: {
+  link: {
     mark: "link",
     getAttrs(token) {
       return {
@@ -211,3 +228,24 @@ export const markdownParser = new MarkdownParser(markdownSchema, taskMarkdownIt,
 export function parseMarkdown(source: string) {
   return markdownParser.parse(source, {});
 }
+
+// prosemirror-markdown 的通用 noCloseToken 处理器会剥掉内容末尾的换行符，
+// 而 MarkDesk 的往返契约要求代码块文本与 markdown-it 的 token 内容逐字一致
+// （fence 内容按规范总是以换行符结尾），因此替换这两个处理器。
+const patchableParser = markdownParser as unknown as {
+  tokenHandlers: Record<
+    string,
+    (state: ParseStateLike, token: FenceTokenShape) => void
+  >;
+};
+
+function preserveFenceNewline(state: ParseStateLike, token: FenceTokenShape) {
+  state.openNode(markdownSchema.nodes.code_block, {
+    language: token.info.trim(),
+  });
+  state.addText(token.content);
+  state.closeNode();
+}
+
+patchableParser.tokenHandlers.fence = preserveFenceNewline;
+patchableParser.tokenHandlers.code_block = preserveFenceNewline;

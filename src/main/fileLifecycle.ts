@@ -18,15 +18,26 @@ export function toFileActionError(
   error: unknown,
   fallback: FileActionFallbackCode = "unexpected",
 ): FileActionError {
-  const candidate =
-    typeof error === "object" && error !== null && "code" in error
-      ? String((error as { code?: unknown }).code)
-      : "";
+  let candidate = "";
+  let rawMessage = "";
+  if (typeof error === "object" && error !== null) {
+    const text = String((error as { message?: unknown }).message ?? "");
+    const newline = text.indexOf("\n");
+    // preload 通过 contextBridge 抛错时只有 message 可用，错误码被编码
+    // 在首行（“<code>\n<消息>”）；本地异常仍直接读取 code 属性。
+    if (newline > 0 && /^[a-z][a-z-]*$/u.test(text.slice(0, newline))) {
+      candidate = text.slice(0, newline);
+      rawMessage = text.slice(newline + 1);
+    } else {
+      candidate = String((error as { code?: unknown }).code ?? "");
+      rawMessage = text;
+    }
+  }
   const code = candidate || fallback;
 
   return {
     code,
-    message: messages[code] ?? "文件操作失败，请稍后重试。",
+    message: messages[code] ?? (rawMessage || "文件操作失败，请稍后重试。"),
   };
 }
 

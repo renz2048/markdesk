@@ -26,6 +26,28 @@ export interface RecentFileStatus extends RecentFile {
   exists: boolean;
 }
 
+export type RecoveryDraftMode = "wysiwyg" | "source" | "read";
+
+export interface RecoveryDraft {
+  key: string;
+  path: string | null;
+  fileName: string;
+  markdown: string;
+  mode: RecoveryDraftMode;
+  cursor: number;
+  scrollTop: number;
+  updatedAt: number;
+}
+
+export type RecoveryDraftInput = Omit<RecoveryDraft, "key" | "updatedAt">;
+
+export interface RecoveryDraftSummary {
+  key: string;
+  path: string | null;
+  fileName: string;
+  updatedAt: number;
+}
+
 export type MenuCommand =
   | "new"
   | "open"
@@ -72,6 +94,10 @@ export const markdeskChannels = {
   getRecentFiles: "markdesk:get-recent-files",
   readRecentFile: "markdesk:read-recent-file",
   clearRecentFiles: "markdesk:clear-recent-files",
+  saveRecoveryDraft: "markdesk:save-recovery-draft",
+  listRecoveryDrafts: "markdesk:list-recovery-drafts",
+  readRecoveryDraft: "markdesk:read-recovery-draft",
+  discardRecoveryDraft: "markdesk:discard-recovery-draft",
   recentFilesChanged: "markdesk:recent-files-changed",
   openRecentFile: "markdesk:open-recent-file",
   menuCommand: "markdesk:menu-command",
@@ -93,6 +119,10 @@ export interface MarkDeskRendererApi {
   getRecentFiles(): Promise<RecentFileStatus[]>;
   readRecentFile(path: string): Promise<FileReadResult>;
   clearRecentFiles(): Promise<void>;
+  saveRecoveryDraft(draft: RecoveryDraftInput): Promise<string>;
+  listRecoveryDrafts(): Promise<RecoveryDraftSummary[]>;
+  readRecoveryDraft(key: string): Promise<RecoveryDraft | null>;
+  discardRecoveryDraft(key: string): Promise<void>;
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   onFileChanged(listener: (event: FileChangedEvent) => void): () => void;
   onOpenRecentFile(

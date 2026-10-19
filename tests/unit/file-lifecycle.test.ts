@@ -21,9 +21,9 @@ describe("shared file-operation guard and revisions", () => {
 
   it("issues distinct revision tokens to successive operations", () => {
     const controller = new FileLifecycleController();
-    const saveRevision = controller.beginOperation();
+    const saveRevision = controller.beginOperation()!;
     controller.endOperation();
-    const replacementRevision = controller.beginOperation();
+    const replacementRevision = controller.beginOperation()!;
 
     expect(saveRevision).not.toBe(replacementRevision);
     expect(controller.isCurrent(saveRevision)).toBe(false);
@@ -33,7 +33,7 @@ describe("shared file-operation guard and revisions", () => {
 
   it("invalidates a saved revision after document edits", () => {
     const controller = new FileLifecycleController();
-    const revision = controller.beginOperation();
+    const revision = controller.beginOperation()!;
 
     controller.markEdited();
 

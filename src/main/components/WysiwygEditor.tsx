@@ -2,10 +2,10 @@ import { useContext, useEffect, useRef } from "react";
 import { baseKeymap } from "prosemirror-commands";
 import { dropCursor } from "prosemirror-dropcursor";
 import { gapCursor } from "prosemirror-gapcursor";
-import { history, historyKeymap } from "prosemirror-history";
+import { history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import type { Node } from "prosemirror-model";
-import { EditorState, Plugin } from "prosemirror-state";
+import { EditorState, Plugin, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { markdownSchema } from "../../markdown/schema";
 import { formattingKeymap } from "../editor/commands";
@@ -13,6 +13,7 @@ import { SetEditorSelectionContext, SetEditorViewContext } from "./Toolbar";
 
 interface Props {
   initialDoc: Node;
+  initialCursor: number;
   sessionKey: string;
   onChange(doc: Node): void;
 }
@@ -20,17 +21,30 @@ interface Props {
 export function createEditorPlugins(): Plugin[] {
   return [
     history(),
-    keymap(historyKeymap),
+    keymap({
+      "Mod-z": undo,
+      "Mod-y": redo,
+      "Shift-Mod-z": redo,
+    }),
     keymap(formattingKeymap),
     keymap(baseKeymap),
+    // 说明：曾尝试用 textblockTypeInputRule 让行首输入 “# ” 直接切换
+    // 标题，但该规则在本应用的输入管线中未触发（原因未明），已移除；
+    // Markdown 结构转换由工具栏命令与源码模式承担。
     dropCursor(),
     gapCursor(),
   ];
 }
 
-export function WysiwygEditor({ initialDoc, sessionKey, onChange }: Props) {
+export function WysiwygEditor({
+  initialDoc,
+  initialCursor,
+  sessionKey,
+  onChange,
+}: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const onChangeRef = useRef(onChange);
+  const initialCursorRef = useRef(initialCursor);
   const setEditorSelection = useContext(SetEditorSelectionContext);
   const setEditorView = useContext(SetEditorViewContext);
 
@@ -42,9 +56,17 @@ export function WysiwygEditor({ initialDoc, sessionKey, onChange }: Props) {
     const host = hostRef.current;
     if (!host) return;
 
+    const clampedCursor = Math.min(
+      Math.max(0, initialCursorRef.current),
+      initialDoc.content.size,
+    );
     const state = EditorState.create({
       schema: markdownSchema,
       doc: initialDoc,
+      selection: TextSelection.near(
+        initialDoc.resolve(clampedCursor),
+        1,
+      ),
       plugins: createEditorPlugins(),
     });
     const view = new EditorView(host, {

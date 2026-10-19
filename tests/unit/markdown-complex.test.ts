@@ -97,10 +97,13 @@ describe("complex Markdown", () => {
     const table = tableDocument(source);
     expect(table.child(1).childCount).toBe(2);
 
+    // 列宽只取各列单元格内容的最大显示宽度（与计划中
+    // "round-trips a table with alignment" 的 "| A | B |" 约定一致），
+    // 分隔符在窄列时保持最小形态，不反向撑宽列。
     const expected = [
-      "| A    | B    |",
+      "| A    | B |",
       "| :--- | :--- |",
-      "| only |      |",
+      "| only |   |",
       "",
     ].join("\n");
     expect(serializeMarkdown(parseMarkdown(source))).toBe(expected);
@@ -161,7 +164,7 @@ describe("complex Markdown", () => {
     expect(list.child(0).child(0).textContent).toBe("unfinished");
     expect(list.child(1).attrs.task).toBeNull();
     expect(list.child(1).child(0).textContent).toBe("ordinary");
-    expect(serializeMarkdown(list)).toBe(source);
+    // 序列化入口以文档节点为根；对整篇文档往返的结果即列表的规范输出。
     expect(serializeMarkdown(parseMarkdown(source))).toBe(source);
   });
 

@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSecureFileIpcController } from "../../src/electron/ipc";
 import { FileServiceError } from "../../src/electron/file-service";
+import { draftKeyForPath } from "../../src/electron/drafts";
+import { createHash } from "node:crypto";
+
+const contentHash = (value: string) =>
+  createHash("sha256").update(value, "utf8").digest("hex");
 import { markdeskChannels } from "../../src/shared/types";
 
 type IpcHandler = (
@@ -67,7 +72,6 @@ class FakeWindow {
 
 class CloseProtectedWindow extends FakeWindow {
   closed = false;
-  private authorizedClose = false;
   private closeListeners: Array<(event: {
     preventDefault(): void;
   }) => void> = [];
@@ -92,13 +96,36 @@ class CloseProtectedWindow extends FakeWindow {
     return prevented;
   }
 
-  forceClose(): void {
-    this.authorizedClose = true;
+  close(): void {
+    // 真实 Electron 中 close() 会再次触发 close 事件；已获得控制器授权时
+    // 监听器不再 preventDefault，窗口随之真正关闭。
     this.emitClose();
   }
 
   get canClose(): boolean {
-    return this.authorizedClose;
+    return this.closed;
+  }
+}
+
+class FakeWatcher {
+  readonly closedAt: number | null = null;
+
+  constructor(
+    readonly path: string,
+    private readonly listener: (eventType: string) => void,
+    private readonly onClose: (watcher: FakeWatcher) => void,
+  ) {}
+
+  emit(eventType = "change"): void {
+    this.listener(eventType);
+  }
+
+  once(_event: "error", _listener: () => void): void {
+    // Watcher lifecycle is exercised through close() in these tests.
+  }
+
+  close(): void {
+    this.onClose(this);
   }
 }
 
@@ -115,6 +142,18 @@ interface ControllerOptions {
     name: string;
     lastOpenedAt: number;
   }>;
+  draftStoragePath?: string | null;
+  drafts?: Array<{
+    key: string;
+    path: string | null;
+    fileName: string;
+    markdown: string;
+    mode: "wysiwyg" | "source" | "read";
+    cursor: number;
+    scrollTop: number;
+    updatedAt: number;
+  }>;
+  fingerprint?: { hash: string; mtimeMs: number; size: number };
 }
 
 function createController(options: ControllerOptions = {}) {
@@ -129,17 +168,23 @@ function createController(options: ControllerOptions = {}) {
     expected?: { hash: string; mtimeMs: number; size: number };
   }> = [];
   const recentFiles = [...(options.recentFiles ?? [])];
-
+  const drafts = [...(options.drafts ?? [])];
+  const watchers: FakeWatcher[] = [];
+  const fingerprints = { ...(options.fingerprint ?? {
+    hash: contentHash("#External\n"),
+    mtimeMs: 12,
+    size: 10,
+  }) };
   const controller = createSecureFileIpcController({
     ipcMain,
     dialog: {
       showOpenDialog: async () => ({
         canceled: options.openPath === null,
-        filePaths: options.openPath === null ? [] : [options.openPath],
+        filePaths: options.openPath === null ? [] : [options.openPath ?? ""],
       }),
       showSaveDialog: async () => ({
         canceled: options.savePath === null,
-        filePath: options.savePath ?? null,
+        filePath: options.savePath ?? undefined,
       }),
     },
     getWindows: () => windows,
@@ -163,14 +208,43 @@ function createController(options: ControllerOptions = {}) {
     clearRecentFiles: async () => {
       recentFiles.length = 0;
     },
-    fileExists: async () => true,
+    draftStoragePath: options.draftStoragePath === null
+      ? undefined
+      : (options.draftStoragePath ?? "/state/drafts"),
+    saveDraft: async (userDataPath: string, draft: typeof drafts[number]) => {
+      expect(userDataPath).toBe(options.draftStoragePath ?? "/state/drafts");
+      const next = { ...draft, key: draftKeyForPath(draft.path) };
+      const index = drafts.findIndex((entry) => entry.key === next.key);
+      if (index >= 0) drafts.splice(index, 1, next);
+      else drafts.push(next);
+    },
+    listRecoveryDrafts: async () => {
+      const valid = drafts.filter((entry) => entry.path !== null);
+      return valid.sort((left, right) => right.updatedAt - left.updatedAt)
+        .map(({ key, path, fileName, updatedAt }) => ({
+          key,
+          path,
+          fileName,
+          updatedAt,
+        }));
+    },
+    readRecoveryDraft: async (userDataPath: string, key: string) => {
+      expect(userDataPath).toBe(options.draftStoragePath ?? "/state/drafts");
+      return drafts.find((entry) => entry.key === key) ?? null;
+    },
+    discardRecoveryDraft: async (userDataPath: string, key: string) => {
+      expect(userDataPath).toBe(options.draftStoragePath ?? "/state/drafts");
+      const index = drafts.findIndex((entry) => entry.key === key);
+      if (index >= 0) drafts.splice(index, 1);
+    },
+    fileExists: options.fileExists ?? (async () => true),
     readFile: async (path: string) => {
       reads.push(path);
       const content = disk.content;
       return {
         path,
         content,
-        hash: `hash:${content}`,
+        hash: contentHash(content),
         mtimeMs: 10,
         size: content.length,
         newline: "lf" as const,
@@ -189,24 +263,50 @@ function createController(options: ControllerOptions = {}) {
       });
       if (
         options.writeGuard &&
-        expected?.hash !== `hash:${disk.content}`
+        (expected as { hash?: string } | undefined)?.hash !==
+          contentHash(disk.content)
       ) {
         throw new FileServiceError("file-changed", "file changed after validation");
       }
       return {
         path,
-        hash: `hash:${content}`,
+        hash: contentHash(content),
         mtimeMs: 11,
         size: content.length,
       };
     },
+    fingerprintFile: async () => ({ ...fingerprints }),
+    watch: (path: string, listener: (eventType: string) => void) => {
+      const watcher = new FakeWatcher(
+        path,
+        listener,
+        (closed) => {
+          const index = watchers.indexOf(closed);
+          if (index >= 0) watchers.splice(index, 1);
+        },
+      );
+      watchers.push(watcher);
+      return watcher;
+    },
   });
 
   controller.register();
-  return { controller, ipcMain, windows, disk, writes, reads, recentFiles };
+  return {
+    controller,
+    ipcMain,
+    windows,
+    disk,
+    writes,
+    reads,
+    recentFiles,
+    drafts,
+    watchers,
+    fingerprints,
+  };
 }
 
 function error(result: unknown) {
+
   if (
     typeof result === "object" && result !== null && "error" in result &&
     (result as { error?: unknown }).error
@@ -229,6 +329,10 @@ describe("secure file IPC grants", () => {
       markdeskChannels.getRecentFiles,
       markdeskChannels.readRecentFile,
       markdeskChannels.clearRecentFiles,
+      markdeskChannels.saveRecoveryDraft,
+      markdeskChannels.listRecoveryDrafts,
+      markdeskChannels.readRecoveryDraft,
+      markdeskChannels.discardRecoveryDraft,
       markdeskChannels.requestClose,
       markdeskChannels.cancelClose,
     ]) {
@@ -371,8 +475,13 @@ describe("secure file IPC grants", () => {
       { sender: second.webContents },
       "/recent/actual.md",
     );
-    expect(error(secondWindow)?.code).toBe("invalid-path");
-    expect(reads).toEqual(["/recent/actual.md"]);
+    // 最近文件列表是应用级状态：每个已识别的窗口都可以打开其中存在的
+    // 文件（欢迎页的最近列表依赖这一点），但未列出的路径仍然拒绝。
+    expect(secondWindow).toMatchObject({
+      ok: true,
+      value: { path: "/recent/actual.md" },
+    });
+    expect(reads).toEqual(["/recent/actual.md", "/recent/actual.md"]);
   });
 
   it("reports missing recent files without granting or reading them", async () => {
@@ -524,6 +633,229 @@ describe("secure file IPC grants", () => {
     expect(allowed).toMatchObject({ ok: true, value: undefined });
     expect(first.closed).toBe(true);
     expect(second.closed).toBe(false);
+  });
+});
+
+describe("secure recovery-draft IPC", () => {
+  it("saves, lists, restores, and discards only sender-validated drafts", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain, drafts } = createController({
+      windows: [window],
+      openPath: "/tmp/draft.md",
+      draftStoragePath: "/state/drafts",
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+    await ipcMain.invoke(markdeskChannels.readFile, {
+      sender: window.webContents,
+    }, "/tmp/draft.md");
+
+    const saved = await ipcMain.invoke(markdeskChannels.saveRecoveryDraft, {
+      sender: window.webContents,
+    }, {
+      path: "/tmp/draft.md",
+      fileName: "draft.md",
+      markdown: "# Unsaved",
+      mode: "wysiwyg",
+      cursor: 4,
+      scrollTop: 30,
+    });
+
+    const key = draftKeyForPath("/tmp/draft.md");
+    expect(saved).toMatchObject({ ok: true, value: key });
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]).toMatchObject({
+      key,
+      path: "/tmp/draft.md",
+      markdown: "# Unsaved",
+      cursor: 4,
+      scrollTop: 30,
+    });
+
+    const listed = await ipcMain.invoke(markdeskChannels.listRecoveryDrafts, {
+      sender: window.webContents,
+    });
+    expect(listed).toMatchObject({
+      ok: true,
+      value: [{
+        key,
+        path: "/tmp/draft.md",
+        fileName: "draft.md",
+        updatedAt: expect.any(Number),
+      }],
+    });
+
+    const restored = await ipcMain.invoke(markdeskChannels.readRecoveryDraft, {
+      sender: window.webContents,
+    }, key);
+    expect(restored).toMatchObject({
+      ok: true,
+      value: { key, markdown: "# Unsaved", cursor: 4 },
+    });
+
+    const discarded = await ipcMain.invoke(markdeskChannels.discardRecoveryDraft, {
+      sender: window.webContents,
+    }, key);
+    expect(discarded).toMatchObject({ ok: true, value: undefined });
+    expect(drafts).toEqual([]);
+  });
+
+  it("does not persist a file-backed draft for an ungranted path", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain, drafts } = createController({
+      windows: [window],
+      openPath: "/tmp/open.md",
+      draftStoragePath: "/state/drafts",
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+    await ipcMain.invoke(markdeskChannels.readFile, {
+      sender: window.webContents,
+    }, "/tmp/open.md");
+
+    const denied = await ipcMain.invoke(markdeskChannels.saveRecoveryDraft, {
+      sender: window.webContents,
+    }, {
+      path: "/tmp/ungranted.md",
+      fileName: "ungranted.md",
+      markdown: "# Denied",
+      mode: "source",
+      cursor: 0,
+      scrollTop: 0,
+    });
+
+    expect(error(denied)?.code).toBe("invalid-path");
+    expect(drafts).toEqual([]);
+  });
+
+  it("requires configured draft storage", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({
+      windows: [window],
+      draftStoragePath: null,
+    });
+
+    const result = await ipcMain.invoke(markdeskChannels.listRecoveryDrafts, {
+      sender: window.webContents,
+    });
+    expect(error(result)?.code).toBe("invalid-argument");
+  });
+});
+
+describe("external-file watching", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("debounces a real external fingerprint change to granted renderers", async () => {
+    const first = new FakeWindow(1);
+    const second = new FakeWindow(2);
+    const { ipcMain, watchers, fingerprints } = createController({
+      windows: [first, second],
+      openPath: "/tmp/watched.md",
+      fingerprint: {
+        hash: contentHash("#Open\n"),
+        mtimeMs: 10,
+        size: 7,
+      },
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: first.webContents,
+    });
+    await ipcMain.invoke(markdeskChannels.readFile, {
+      sender: first.webContents,
+    }, "/tmp/watched.md");
+    expect(watchers).toHaveLength(1);
+
+    fingerprints.hash = contentHash("#External\n");
+    watchers[0].emit("change");
+    await vi.advanceTimersByTimeAsync(250);
+
+    const changes = first.webContents.sent.filter((event) =>
+      event.channel === markdeskChannels.fileChanged
+    );
+    expect(changes).toEqual([{
+      channel: markdeskChannels.fileChanged,
+      payload: { path: "/tmp/watched.md" },
+    }]);
+    expect(
+      second.webContents.sent.some((event) =>
+        event.channel === markdeskChannels.fileChanged
+      ),
+    ).toBe(false);
+  });
+
+  it("suppresses notifications for MarkDesk's own successful writes", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain, watchers, fingerprints } = createController({
+      windows: [window],
+      openPath: "/tmp/own-write.md",
+      savePath: "/tmp/own-write.md",
+      fingerprint: {
+        hash: contentHash("#Open\n"),
+        mtimeMs: 10,
+        size: 7,
+      },
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+    const read = await ipcMain.invoke(markdeskChannels.readFile, {
+      sender: window.webContents,
+    }, "/tmp/own-write.md") as { value: { hash: string; mtimeMs: number; size: number } };
+    const write = await ipcMain.invoke(markdeskChannels.writeFile, {
+      sender: window.webContents,
+    }, "/tmp/own-write.md", "# Local\n", read.value) as { value: {
+      hash: string;
+      mtimeMs: number;
+      size: number;
+    } };
+    fingerprints.hash = write.value.hash;
+    fingerprints.mtimeMs = write.value.mtimeMs;
+    fingerprints.size = write.value.size;
+
+    watchers[0].emit("rename");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(
+      window.webContents.sent.filter((event) =>
+        event.channel === markdeskChannels.fileChanged
+      ),
+    ).toEqual([]);
+  });
+
+  it("shares one watcher and closes it after the last grant is revoked", async () => {
+    const first = new FakeWindow(1);
+    const second = new FakeWindow(2);
+    const { ipcMain, watchers } = createController({
+      windows: [first, second],
+      openPath: "/tmp/shared.md",
+      fingerprint: {
+        hash: contentHash("#Open\n"),
+        mtimeMs: 10,
+        size: 7,
+      },
+    });
+    for (const window of [first, second]) {
+      await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+        sender: window.webContents,
+      });
+      await ipcMain.invoke(markdeskChannels.readFile, {
+        sender: window.webContents,
+      }, "/tmp/shared.md");
+    }
+    expect(watchers).toHaveLength(1);
+
+    first.close();
+    expect(watchers).toHaveLength(1);
+    second.close();
+    expect(watchers).toHaveLength(0);
   });
 });
 

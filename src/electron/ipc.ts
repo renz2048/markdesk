@@ -3,15 +3,24 @@ import {
   dialog,
   ipcMain,
 } from "electron";
+import { watch } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import {
+  fingerprint,
   FileServiceError,
   isFileFingerprint,
   isMarkdownPath,
   readMarkdownFile,
   writeMarkdownFile,
 } from "./file-service";
+import {
+  discardRecoveryDraft,
+  draftKeyForPath,
+  listRecoveryDrafts,
+  readRecoveryDraft,
+  saveDraft,
+} from "./drafts";
 import {
   clearRecentFiles,
   loadRecentFiles,
@@ -26,6 +35,9 @@ import {
   type MenuCommand,
   type RecentFile,
   type RecentFileStatus,
+  type RecoveryDraft,
+  type RecoveryDraftInput,
+  type RecoveryDraftSummary,
 } from "../shared/types";
 
 interface WebContentsLike {
@@ -95,6 +107,29 @@ export interface SecureFileIpcDependencies {
   ) => Promise<RecentFile[]>;
   clearRecentFiles?: (storagePath: string) => Promise<void>;
   fileExists?: (path: string) => Promise<boolean>;
+  draftStoragePath?: string;
+  saveDraft?: (userDataPath: string, draft: RecoveryDraft) => Promise<void>;
+  listRecoveryDrafts?: (
+    userDataPath: string,
+  ) => Promise<RecoveryDraftSummary[]>;
+  readRecoveryDraft?: (
+    userDataPath: string,
+    key: string,
+  ) => Promise<RecoveryDraft | null>;
+  discardRecoveryDraft?: (
+    userDataPath: string,
+    key: string,
+  ) => Promise<void>;
+  fingerprintFile?: (path: string) => Promise<FileFingerprint>;
+  watch?: (
+    path: string,
+    listener: (eventType: string) => void,
+  ) => FileWatcherLike;
+}
+
+interface FileWatcherLike {
+  once(event: "error", listener: () => void): void;
+  close(): void;
 }
 
 interface WindowFileGrants {
@@ -110,6 +145,13 @@ interface CloseRequest {
   cancel(): void;
 }
 
+interface WatchedFileState {
+  watcher: FileWatcherLike;
+  owners: Set<number>;
+  timeout: ReturnType<typeof setTimeout> | null;
+  closed: boolean;
+}
+
 type RecentFilesListener = (files: RecentFileStatus[]) => void;
 
 function success<TValue>(value: TValue): IpcResult<TValue> {
@@ -118,9 +160,17 @@ function success<TValue>(value: TValue): IpcResult<TValue> {
 
 function failure(error: unknown): IpcResult<never> {
   if (error instanceof FileServiceError) {
+    if (error.code !== "invalid-path" && error.code !== "invalid-argument") {
+      // 非参数类的失败在主进程留下上下文，便于诊断环境与竞态问题。
+      console.error(
+        `markdesk ${error.code}:`,
+        error.cause ?? error.message,
+      );
+    }
     return { ok: false, error: { code: error.code, message: error.message } };
   }
 
+  console.error("markdesk unexpected IPC error:", error);
   return {
     ok: false,
     error: {
@@ -141,10 +191,13 @@ async function guarded<TValue>(
 }
 
 function normalizeUnresolvedPath(path: string): string {
-  const normalized = win32.isAbsolute(path)
-    ? win32.resolve(path)
-    : posix.resolve(path);
-  return win32.isAbsolute(path) ? normalized.toLowerCase() : normalized;
+  // 只有盘符形式（C:\ 或 C:/）才按 win32 语义规范化（大小写不敏感、
+  // 反斜杠分隔）。注意 win32.isAbsolute("/tmp/x") 在 Node 中返回 true，
+  // 若据此分支会在 POSIX 上把 /tmp 规范化成 \tmp 并破坏文件访问。
+  if (/^[a-zA-Z]:[\\/]/u.test(path)) {
+    return win32.resolve(path).toLowerCase();
+  }
+  return posix.resolve(path);
 }
 
 async function defaultCanonicalize(path: string): Promise<string> {
@@ -166,6 +219,17 @@ async function defaultFileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function defaultWatchFile(
+  path: string,
+  listener: (eventType: string) => void,
+): FileWatcherLike {
+  const watcher = watch(path, { persistent: false }, (event) => {
+    listener(event);
+  });
+  watcher.once("error", () => watcher.close());
+  return watcher;
 }
 
 function defaultWindows(): BrowserWindowLike[] {
@@ -217,9 +281,18 @@ export function createSecureFileIpcController(
   const upsertRecent = dependencies.upsertRecentFile ?? upsertRecentFile;
   const clearRecent = dependencies.clearRecentFiles ?? clearRecentFiles;
   const fileExists = dependencies.fileExists ?? defaultFileExists;
+  const draftStoragePath = dependencies.draftStoragePath;
+  const saveDraftFile = dependencies.saveDraft ?? saveDraft;
+  const listDrafts = dependencies.listRecoveryDrafts ?? listRecoveryDrafts;
+  const readDraft = dependencies.readRecoveryDraft ?? readRecoveryDraft;
+  const discardDraft = dependencies.discardRecoveryDraft ?? discardRecoveryDraft;
+  const fingerprintFile = dependencies.fingerprintFile ?? fingerprint;
+  const watchFile = dependencies.watch ?? defaultWatchFile;
   const grantsBySender = new Map<number, WindowFileGrants>();
   const closeRequests = new Map<number, CloseRequest>();
   const recentFilesListeners = new Set<RecentFilesListener>();
+  const watchedFiles = new Map<string, WatchedFileState>();
+  const latestFingerprints = new Map<string, FileFingerprint>();
   let recentOperation: Promise<unknown> = Promise.resolve();
   let registered = false;
 
@@ -229,7 +302,95 @@ export function createSecureFileIpcController(
   }
 
   function revoke(senderId: number) {
+    stopWatchingForSender(senderId);
     grantsBySender.delete(senderId);
+  }
+
+  function notifyWatchedFileChanged(canonical: string): void {
+    for (const grants of grantsBySender.values()) {
+      if (
+        !grants.sender.isDestroyed?.() &&
+        grants.readPaths.has(canonical)
+      ) {
+        grants.sender.send(markdeskChannels.fileChanged, {
+          path: canonical,
+        });
+      }
+    }
+  }
+
+  function closeWatchedFile(canonical: string, state: WatchedFileState): void {
+    if (state.closed) return;
+    state.closed = true;
+    if (state.timeout) clearTimeout(state.timeout);
+    watchedFiles.delete(canonical);
+    state.watcher.close();
+  }
+
+  function scheduleExternalCheck(canonical: string): void {
+    const state = watchedFiles.get(canonical);
+    if (!state || state.closed) return;
+    if (state.timeout) clearTimeout(state.timeout);
+    state.timeout = setTimeout(() => {
+      if (!watchedFiles.has(canonical)) return;
+      state.timeout = null;
+      void checkExternalFile(canonical);
+    }, 200);
+  }
+
+  async function checkExternalFile(canonical: string): Promise<void> {
+    const expected = latestFingerprints.get(canonical);
+    let current: FileFingerprint;
+    try {
+      current = await fingerprintFile(canonical);
+    } catch {
+      notifyWatchedFileChanged(canonical);
+      return;
+    }
+
+    if (
+      !expected ||
+      current.hash !== expected.hash ||
+      current.mtimeMs !== expected.mtimeMs ||
+      current.size !== expected.size
+    ) {
+      notifyWatchedFileChanged(canonical);
+    }
+  }
+
+  function startWatching(
+    canonical: string,
+    owner: WindowFileGrants,
+    fingerprintValue: FileFingerprint,
+  ): void {
+    latestFingerprints.set(canonical, fingerprintValue);
+    const existing = watchedFiles.get(canonical);
+    if (existing) {
+      existing.owners.add(owner.sender.id);
+      return;
+    }
+
+    try {
+      const state: WatchedFileState = {
+        watcher: watchFile(canonical, () => scheduleExternalCheck(canonical)),
+        owners: new Set([owner.sender.id]),
+        timeout: null,
+        closed: false,
+      };
+      state.watcher.once("error", () => closeWatchedFile(canonical, state));
+      watchedFiles.set(canonical, state);
+      scheduleExternalCheck(canonical);
+    } catch {
+      // Watching is an enhancement; guarded reads and fingerprint-checked
+      // writes remain the security and collision boundary.
+    }
+  }
+
+  function stopWatchingForSender(senderId: number): void {
+    for (const [canonical, state] of watchedFiles) {
+      state.owners.delete(senderId);
+      if (state.owners.size === 0) closeWatchedFile(canonical, state);
+    }
   }
 
   function grantsForSender(sender: WebContentsLike): WindowFileGrants {
@@ -303,6 +464,34 @@ export function createSecureFileIpcController(
     return recentStoragePath;
   }
 
+  function requireDraftStorage(): string {
+    if (!draftStoragePath) {
+      throw new FileServiceError(
+        "invalid-argument",
+        "恢复草稿存储未配置。",
+      );
+    }
+    return draftStoragePath;
+  }
+
+  function isRecoveryDraftInput(
+    value: unknown,
+  ): value is RecoveryDraftInput {
+    if (typeof value !== "object" || value === null) return false;
+    const candidate = value as Partial<RecoveryDraftInput>;
+    return (
+      Object.keys(value).length === 6 &&
+      (candidate.path === null || typeof candidate.path === "string") &&
+      typeof candidate.fileName === "string" &&
+      typeof candidate.markdown === "string" &&
+      (candidate.mode === "wysiwyg" ||
+        candidate.mode === "source" ||
+        candidate.mode === "read") &&
+      typeof candidate.cursor === "number" &&
+      typeof candidate.scrollTop === "number"
+    );
+  }
+
   function queueRecentOperation<TValue>(
     operation: () => Promise<TValue>,
   ): Promise<TValue> {
@@ -361,12 +550,14 @@ export function createSecureFileIpcController(
     canonical: string,
   ): Promise<FileReadResult> {
     const file = await read(canonical);
-    grants.writePaths.add(canonical);
-    grants.writeBaselines.set(canonical, {
+    const fingerprintValue: FileFingerprint = {
       hash: file.hash,
       mtimeMs: file.mtimeMs,
       size: file.size,
-    });
+    };
+    grants.writePaths.add(canonical);
+    grants.writeBaselines.set(canonical, fingerprintValue);
+    startWatching(canonical, grants, fingerprintValue);
     await recordRecentFileBestEffort(canonical);
     return file;
   }
@@ -483,11 +674,13 @@ export function createSecureFileIpcController(
             content,
             serviceExpected,
           );
-          grants.writeBaselines.set(canonical, {
+          const fingerprintValue: FileFingerprint = {
             hash: result.hash,
             mtimeMs: result.mtimeMs,
             size: result.size,
-          });
+          };
+          grants.writeBaselines.set(canonical, fingerprintValue);
+          startWatching(canonical, grants, fingerprintValue);
           await recordRecentFileBestEffort(canonical);
           return result;
         }),
@@ -546,6 +739,94 @@ export function createSecureFileIpcController(
             await clearRecent(requireRecentStorage());
             broadcastRecentFiles([]);
           });
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.saveRecoveryDraft,
+      async (
+        event,
+        input: unknown,
+      ): Promise<IpcResult<string>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          if (!isRecoveryDraftInput(input)) {
+            throw new FileServiceError(
+              "invalid-argument",
+              "恢复草稿数据无效。",
+            );
+          }
+
+          const canonical = input.path === null
+            ? null
+            : await canonicalMarkdownPath(input.path);
+          if (
+            canonical !== null &&
+            !grants.readPaths.has(canonical) &&
+            !grants.writePaths.has(canonical)
+          ) {
+            throw new FileServiceError(
+              "invalid-path",
+              "此文件路径未获准保存恢复草稿。",
+            );
+          }
+
+          const draft: RecoveryDraft = {
+            ...input,
+            path: canonical,
+            key: draftKeyForPath(canonical),
+            updatedAt: Date.now(),
+          };
+          await saveDraftFile(requireDraftStorage(), draft);
+          return draft.key;
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.listRecoveryDrafts,
+      async (event): Promise<IpcResult<RecoveryDraftSummary[]>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          return listDrafts(requireDraftStorage());
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.readRecoveryDraft,
+      async (
+        event,
+        key: unknown,
+      ): Promise<IpcResult<RecoveryDraft | null>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          if (typeof key !== "string" || !/^[0-9a-f]{64}$/u.test(key)) {
+            throw new FileServiceError(
+              "invalid-argument",
+              "恢复草稿键无效。",
+            );
+          }
+
+          const draft = await readDraft(requireDraftStorage(), key);
+          if (draft?.path !== null && draft?.path !== undefined) {
+            const canonical = await canonicalMarkdownPath(draft.path);
+            grants.readPaths.add(canonical);
+          }
+          return draft;
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.discardRecoveryDraft,
+      async (event, key: unknown): Promise<IpcResult<void>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          if (typeof key !== "string" || !/^[0-9a-f]{64}$/u.test(key)) {
+            throw new FileServiceError(
+              "invalid-argument",
+              "恢复草稿键无效。",
+            );
+          }
+          await discardDraft(requireDraftStorage(), key);
         }),
     );
 

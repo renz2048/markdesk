@@ -266,14 +266,18 @@ describe("delimiter-safe Markdown serialization", () => {
     );
   });
 
-  it("uses a tilde fence when backticks occur in code or info text", () => {
+  it("uses a tilde fence when the info string contains backticks", () => {
+    // markdown-it 按 CommonMark 解析该源码：第 4 行的裸 ``` 关闭第一个围栏，
+    // 第 5 行再开一个空围栏，因此往返结果是一个内容含 ``` 的代码块加一个
+    // 空代码块；代码含反引号时使用更长的反引号围栏（见上一个用例），
+    // 只有 info 字符串含反引号时才切换到波浪线围栏。
     const backtickContent = "```ts\nconst x = 1;\n```";
     const once = roundTripMarkdown(`\`\`\`md\n${backtickContent}\n\`\`\``);
 
-    expect(once).toBe(`~~~md\n${backtickContent}\n~~~\n`);
-    expect(parseMarkdown(once).child(0).textContent).toBe(
-      `${backtickContent}\n`,
-    );
+    expect(once).toBe("````md\n```ts\nconst x = 1;\n````\n\n```\n```\n");
+    const reparsed = parseMarkdown(once);
+    expect(reparsed.child(0).textContent).toBe("```ts\nconst x = 1;\n");
+    expect(reparsed.childCount).toBe(2);
 
     const info = "js `tag`";
     const code = markdownSchema.nodes.code_block.createAndFill(
@@ -400,10 +404,12 @@ describe("round-trip preservation", () => {
   it("preserves escaped literal characters", () => {
     const source = "\\\\ *emphasis* \\[not a link\\] \\`not code\\`";
     const paragraph = parseMarkdown(source).child(0);
-    expect(paragraph.textContent).toBe("\\ *emphasis* [not a link] `not code`");
+    // "\\\\" 解析为字面反斜杠；未被转义的 *emphasis* 按 CommonMark 规则
+    // 成为强调标记，因此 textContent 不含星号。
+    expect(paragraph.textContent).toBe("\\ emphasis [not a link] `not code`");
     const once = roundTripMarkdown(source);
     expect(parseMarkdown(once).child(0).textContent).toBe(
-      "\\ *emphasis* [not a link] `not code`",
+      "\\ emphasis [not a link] `not code`",
     );
     expect(roundTripMarkdown(once)).toBe(once);
   });

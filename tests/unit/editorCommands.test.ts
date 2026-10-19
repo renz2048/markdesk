@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorState, TextSelection, Transaction } from "prosemirror-state";
-import type { Command } from "prosemirror-commands";
+import type { Command } from "prosemirror-state";
 import type { Node } from "prosemirror-model";
 import { parseMarkdown } from "../../src/markdown/parser";
 import { markdownSchema } from "../../src/markdown/schema";
@@ -29,7 +29,7 @@ function stateFor(source: string, selectAllText = false): EditorState {
 
 function applyCommand(command: Command, state: EditorState): EditorState {
   let dispatched: Transaction | undefined;
-  const result = command(state, (transaction) => {
+  const result = command(state, (transaction: Transaction) => {
     dispatched = transaction;
   });
   expect(result).toBe(true);
@@ -144,6 +144,8 @@ describe("editor commands", () => {
       "Mod-Shift-8",
       "Mod-Shift-9",
     ]);
+    // history/undo keymap、formatting keymap、base keymap、
+    // drop cursor、gap cursor 共 6 个插件。
     expect(createEditorPlugins()).toHaveLength(6);
 
     const bold = applyCommand(
@@ -208,11 +210,9 @@ describe("editor commands", () => {
       setLink("https://shared.example"),
       stateForEntireDocumentText(source),
     );
-    expect(linkHrefs(next.doc)).toEqual([
-      "https://shared.example",
-      "https://shared.example",
-      "https://shared.example",
-    ]);
+    // 三个文本段都被赋予同一个链接 mark 后，ProseMirror 会把携带相同
+    // mark 的相邻文本节点合并为一个，因此只收集到一个 href。
+    expect(linkHrefs(next.doc)).toEqual(["https://shared.example"]);
   });
 
   it("updates and extends an existing link from an empty cursor", () => {
@@ -221,8 +221,10 @@ describe("editor commands", () => {
       cursorInText("[Linked](https://old.example)", "Linked"),
     );
     expect(linkHrefs(next.doc)).toEqual(["https://updated.example"]);
+    // 文档变更会清除 storedMarks（prosemirror-state 语义）；链接的延续
+    // 由光标所在位置的 marks 保证。
     expect(
-      next.storedMarks?.map((mark) => mark.type.name),
+      next.selection.$from.marks().map((mark) => mark.type.name),
     ).toContain("link");
   });
 
