@@ -8,9 +8,10 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
-    "dev:electron": "wait-on tcp:127.0.0.1:5173 && tsc -p tsconfig.electron.json && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "dev:electron": "wait-on tcp:127.0.0.1:5173 && npm run build:preload && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
-    "build": "tsc -p tsconfig.electron.json && vite build",
+    "build:preload": "tsc -p tsconfig.electron.json && esbuild src/electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/electron/preload.js",
+    "build": "npm run build:preload && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "npm run build && playwright test",
@@ -18,8 +19,8 @@
   },
   "dependencies": {
     "@codemirror/lang-markdown": "6.3.1",
-    "@codemirror/language-data": "6.0.1",
-    "@codemirror/state": "6.5.2",
+    "@codemirror/language-data": "6.0.0",
+    "@codemirror/state": "6.7.6",
     "codemirror": "6.0.1",
     "dompurify": "3.2.3",
     "electron": "33.2.0",
@@ -55,5 +56,9 @@
     "vite": "5.4.11",
     "vitest": "2.1.8",
     "wait-on": "8.0.1"
+  },
+  "allowScripts": {
+    "electron@33.2.0": true,
+    "esbuild@0.21.5": true
   }
 }
