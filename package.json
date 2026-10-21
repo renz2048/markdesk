@@ -23,8 +23,6 @@
     "@codemirror/state": "6.7.6",
     "codemirror": "6.0.1",
     "dompurify": "3.2.3",
-    "electron": "33.2.0",
-    "electron-builder": "25.1.8",
     "markdown-it": "14.1.0",
     "markdown-it-task-lists": "2.1.1",
     "prosemirror-commands": "1.6.2",
@@ -56,10 +54,13 @@
     "typescript": "5.7.2",
     "vite": "5.4.11",
     "vitest": "2.1.8",
-    "wait-on": "8.0.1"
+    "wait-on": "8.0.1",
+    "electron": "33.2.0",
+    "electron-builder": "25.1.8"
   },
   "allowScripts": {
     "electron@33.2.0": true,
     "esbuild@0.21.5": true
-  }
+  },
+  "author": "MarkDesk contributors"
 }

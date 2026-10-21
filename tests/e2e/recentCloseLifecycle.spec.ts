@@ -198,9 +198,21 @@ test("an opening document stays inert and a concurrent edit blocks replacement",
     },
     { path: betaPath, channel: markdeskChannels.openRecentFile },
   );
-  await page.waitForFunction(
-    () => (window as unknown as { __busySeen?: boolean }).__busySeen === true,
-  );
+  // waitForFunction 的页面侧轮询器会被应用 CSP（script-src 'self'）拒绝，
+  // 因此在 evaluate 内部自轮询（经 callFunctionOn 注入，不受影响）。
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const seen = window as unknown as { __busySeen?: boolean };
+    if (seen.__busySeen) {
+      resolve();
+      return;
+    }
+    const timer = setInterval(() => {
+      if (seen.__busySeen) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 20);
+  }));
   await expect(page.getByTestId("app-shell")).toHaveAttribute(
     "aria-live",
     "polite",

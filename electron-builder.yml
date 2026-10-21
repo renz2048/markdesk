@@ -1,0 +1,25 @@
+appId: io.markdesk.desktop
+productName: MarkDesk
+directories:
+  output: release
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+asar: true
+win:
+  target:
+    - nsis
+  artifactName: MarkDesk-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+linux:
+  target:
+    - AppImage
+  category: Utility
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
