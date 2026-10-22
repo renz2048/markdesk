@@ -493,7 +493,8 @@ body {
 :is(.ProseMirror, .read-view) pre {
   overflow: auto;
   padding: 12px 14px;
-  white-space: pre-wrap;
+  /* 与 Typora 一致：代码块不折行，超宽行在底部出横向滚动条。 */
+  white-space: pre;
 }
 
 :is(.ProseMirror, .read-view) hr {
