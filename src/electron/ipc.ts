@@ -199,12 +199,19 @@ async function guarded<TValue>(
   }
 }
 
-function normalizeUnresolvedPath(path: string): string {
+export function normalizeUnresolvedPath(path: string): string {
   // 只有盘符形式（C:\ 或 C:/）才按 win32 语义规范化（大小写不敏感、
   // 反斜杠分隔）。注意 win32.isAbsolute("/tmp/x") 在 Node 中返回 true，
   // 若据此分支会在 POSIX 上把 /tmp 规范化成 \tmp 并破坏文件访问。
   if (/^[a-zA-Z]:[\\/]/u.test(path)) {
     return win32.resolve(path).toLowerCase();
+  }
+  // UNC 路径（\\wsl.localhost\Ubuntu\...、\\server\share）同样按 win32
+  // 语义规范化，但保留大小写：WSL 等 Linux 侧路径区分大小写，小写化
+  // 会破坏后续访问；若落入 posix.resolve 会把整个路径当成单个相对
+  // 组件拼上 cwd，导致无法读取。
+  if (/^\\\\|^\/\//u.test(path)) {
+    return win32.resolve(path);
   }
   return posix.resolve(path);
 }
@@ -327,6 +334,7 @@ export interface SecureFileIpcController {
   register(): void;
   notifyFileChanged(path: string): Promise<void>;
   protectWindowClose(window: CloseableWindowLike): void;
+  openExternalPath(path: unknown): Promise<string>;
   refreshRecentFiles(): Promise<RecentFileStatus[]>;
   clearRecentFiles(): Promise<void>;
   onRecentFilesChanged(listener: RecentFilesListener): void;
@@ -1026,6 +1034,9 @@ export function createSecureFileIpcController(
   }
 
   function protectWindowClose(window: CloseableWindowLike): void {
+    // "closed" 触发时窗口已销毁，再访问 window.webContents 会抛
+    // "Object has been destroyed"，因此先在窗口存活时捕获 id。
+    const webContentsId = window.webContents.id;
     let authorizedClose = false;
     let closeRequest: CloseRequest | null = null;
     window.on("close", (event) => {
@@ -1051,9 +1062,20 @@ export function createSecureFileIpcController(
     });
     window.once("closed", () => {
       closeRequest = null;
-      closeRequests.delete(window.webContents.id);
-      revoke(window.webContents.id);
+      closeRequests.delete(webContentsId);
+      revoke(webContentsId);
     });
+  }
+
+  // 处理命令行/文件关联传入的路径：校验并规范化后登记到最近文件，
+  // 渲染端随后的 readRecentFile 依赖该记录完成受权读取。
+  async function openExternalPath(path: unknown): Promise<string> {
+    const canonical = await canonicalMarkdownPath(path);
+    if (!(await fileExists(canonical))) {
+      throw new FileServiceError("invalid-path", "文件不存在。");
+    }
+    await recordRecentFileBestEffort(canonical);
+    return canonical;
   }
 
   async function refreshRecentFiles(): Promise<RecentFileStatus[]> {
@@ -1080,6 +1102,7 @@ export function createSecureFileIpcController(
     register,
     notifyFileChanged,
     protectWindowClose,
+    openExternalPath,
     refreshRecentFiles,
     clearRecentFiles: clearRecentFilesForApplication,
     onRecentFilesChanged,

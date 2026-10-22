@@ -1,5 +1,6 @@
 import { BrowserWindow, app, protocol, shell } from "electron";
 import { isAbsolute, join } from "node:path";
+import { markdownPathFromArgv } from "./argv";
 import {
   createSecureFileIpcController,
   sendMenuCommand,
@@ -46,6 +47,39 @@ let currentRecentFiles: RecentFileStatus[] = [];
 function commandTarget(): BrowserWindow | null {
   return resolveFocusedMarkDeskWindow(BrowserWindow.getAllWindows());
 }
+
+// 单实例：资源管理器“打开方式”或命令行再次启动时，把文件路径转交给
+// 已有实例，避免开出第二个窗口。
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) app.quit();
+
+function activeMarkDeskWindow(): BrowserWindow | null {
+  const windows = BrowserWindow.getAllWindows();
+  return (
+    resolveFocusedMarkDeskWindow(windows) ??
+    windows.find((window) => !window.isDestroyed()) ??
+    null
+  );
+}
+
+function openExternalMarkdown(path: string, target: BrowserWindow): void {
+  fileIpcController.openExternalPath(path).then(
+    (canonical) => {
+      if (!target.isDestroyed()) sendOpenRecentFile(target, canonical);
+    },
+    (error) => {
+      console.error("无法打开指定的 Markdown 文件", error);
+    },
+  );
+}
+
+app.on("second-instance", (_event, argv) => {
+  const target = activeMarkDeskWindow();
+  if (!target) return;
+  target.focus();
+  const path = markdownPathFromArgv(argv);
+  if (path) openExternalMarkdown(path, target);
+});
 
 function refreshApplicationMenu(): void {
   createApplicationMenu({
@@ -113,9 +147,17 @@ export function createMainWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return;
   fileIpcController.register();
   refreshApplicationMenu();
-  createMainWindow();
+  const win = createMainWindow();
+  const externalPath = markdownPathFromArgv(process.argv);
+  if (externalPath) {
+    // 渲染端完成加载前发送会被丢弃，等页面就绪后再转发打开请求。
+    win.webContents.once("did-finish-load", () => {
+      openExternalMarkdown(externalPath, win);
+    });
+  }
   fileIpcController.refreshRecentFiles().catch((error) => {
     console.error("无法读取最近文件", error);
   });

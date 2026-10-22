@@ -7,6 +7,15 @@ files:
   - dist-electron/**/*
   - package.json
 asar: true
+fileAssociations:
+  - ext: md
+    name: Markdown 文档
+    description: Markdown 文档
+    role: Editor
+  - ext: markdown
+    name: Markdown 文档
+    description: Markdown 文档
+    role: Editor
 win:
   target:
     - nsis

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSecureFileIpcController,
+  normalizeUnresolvedPath,
   resolveResourcePath,
 } from "../../src/electron/ipc";
 import { FileServiceError } from "../../src/electron/file-service";
@@ -56,11 +57,19 @@ class FakeWebContents {
 }
 
 class FakeWindow {
-  readonly webContents: FakeWebContents;
+  private readonly contents: FakeWebContents;
+  private windowClosed = false;
   private closedListeners: Array<() => void> = [];
 
   constructor(id: number) {
-    this.webContents = new FakeWebContents(id);
+    this.contents = new FakeWebContents(id);
+  }
+
+  // 真实 BrowserWindow 销毁后访问 webContents 会抛 "Object has been
+  // destroyed"；这里保持一致，避免假实现掩盖销毁后的误用。
+  get webContents(): FakeWebContents {
+    if (this.windowClosed) throw new Error("Object has been destroyed");
+    return this.contents;
   }
 
   once(event: "closed", listener: () => void): void {
@@ -68,8 +77,11 @@ class FakeWindow {
   }
 
   close(): void {
+    // 真实 Electron 在触发 "closed" 之前就已销毁窗口与 webContents。
+    if (this.windowClosed) return;
+    this.windowClosed = true;
+    this.contents.destroy();
     for (const listener of this.closedListeners.splice(0)) listener();
-    this.webContents.destroy();
   }
 }
 
@@ -95,7 +107,10 @@ class CloseProtectedWindow extends FakeWindow {
         },
       });
     }
-    if (!prevented) this.closed = true;
+    if (!prevented) {
+      this.closed = true;
+      super.close();
+    }
     return prevented;
   }
 
@@ -321,6 +336,31 @@ function error(result: unknown) {
   return null;
 }
 
+describe("normalizeUnresolvedPath", () => {
+  it("normalizes drive-letter paths case-insensitively", () => {
+    expect(normalizeUnresolvedPath("C:\\Docs\\Report.MD")).toBe(
+      "c:\\docs\\report.md",
+    );
+  });
+
+  it("canonicalizes UNC separators without changing case", () => {
+    expect(
+      normalizeUnresolvedPath(
+        "\\\\wsl.localhost\\Ubuntu-26.04\\Home\\RenZheng\\Notes.md",
+      ),
+    ).toBe("\\\\wsl.localhost\\Ubuntu-26.04\\Home\\RenZheng\\Notes.md");
+    expect(
+      normalizeUnresolvedPath(
+        "//wsl.localhost/Ubuntu-26.04/home/dev/todo.md",
+      ),
+    ).toBe("\\\\wsl.localhost\\Ubuntu-26.04\\home\\dev\\todo.md");
+  });
+
+  it("keeps POSIX paths on posix semantics", () => {
+    expect(normalizeUnresolvedPath("/tmp/notes/a.md")).toBe("/tmp/notes/a.md");
+  });
+});
+
 describe("secure file IPC grants", () => {
   it("validates the sender for every invoke handler", async () => {
     const { ipcMain } = createController({ windows: [] });
@@ -371,29 +411,30 @@ describe("secure file IPC grants", () => {
 
   it("revokes grants when the window or webContents is destroyed", async () => {
     const window = new FakeWindow(1);
+    const sender = window.webContents;
     const { ipcMain } = createController({
       windows: [window],
       openPath: "/tmp/a.md",
     });
     await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
-      sender: window.webContents,
+      sender,
     });
     await ipcMain.invoke(markdeskChannels.readFile, {
-      sender: window.webContents,
+      sender,
     }, "/tmp/a.md");
 
     window.close();
     const afterWindowClose = await ipcMain.invoke(
       markdeskChannels.readFile,
-      { sender: window.webContents },
+      { sender },
       "/tmp/a.md",
     );
     expect(error(afterWindowClose)?.code).toBe("unexpected-error");
 
-    window.webContents.destroy();
+    sender.destroy();
     const afterContentsDestroyed = await ipcMain.invoke(
       markdeskChannels.readFile,
-      { sender: window.webContents },
+      { sender },
       "/tmp/a.md",
     );
     expect(error(afterContentsDestroyed)?.code).toBe("unexpected-error");
@@ -553,18 +594,19 @@ describe("secure file IPC grants", () => {
 
   it("routes window closing through a renderer close request", async () => {
     const window = new CloseProtectedWindow(1);
+    const sender = window.webContents;
     const { controller, ipcMain } = createController({ windows: [window] });
     controller.protectWindowClose(window);
 
     expect(window.emitClose()).toBe(true);
     expect(window.closed).toBe(false);
-    expect(window.webContents.sent).toEqual([
+    expect(sender.sent).toEqual([
       { channel: markdeskChannels.closeRequested, payload: undefined },
     ]);
 
     const result = await ipcMain.invoke(
       markdeskChannels.requestClose,
-      { sender: window.webContents },
+      { sender },
     );
 
     expect(result).toMatchObject({ ok: true, value: undefined });
@@ -638,6 +680,35 @@ describe("secure file IPC grants", () => {
     expect(allowed).toMatchObject({ ok: true, value: undefined });
     expect(first.closed).toBe(true);
     expect(second.closed).toBe(false);
+  });
+
+  it("registers externally opened paths so the renderer can read them", async () => {
+    const window = new FakeWindow(1);
+    const { controller, ipcMain } = createController({ windows: [window] });
+
+    const canonical = await controller.openExternalPath("/tmp/external.md");
+
+    expect(canonical).toBe("/tmp/external.md");
+    const result = await ipcMain.invoke(
+      markdeskChannels.readRecentFile,
+      { sender: window.webContents },
+      "/tmp/external.md",
+    );
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("rejects external open requests for missing or non-markdown paths", async () => {
+    const window = new FakeWindow(1);
+    const { controller } = createController({
+      windows: [window],
+      fileExists: async () => false,
+    });
+    await expect(
+      controller.openExternalPath("/tmp/gone.md"),
+    ).rejects.toMatchObject({ code: "invalid-path" });
+    await expect(
+      controller.openExternalPath("/tmp/notes.txt"),
+    ).rejects.toMatchObject({ code: "invalid-path" });
   });
 });
 
