@@ -35,6 +35,44 @@ npm run build        # preload 打包（esbuild）+ 主进程 tsc + 渲染端 Vi
 e2e 在受限环境（如 WSLg）下建议单 worker 串行执行（`playwright.config.ts` 已配置），
 并以每条测试的结果为准。
 
+## 在 Linux 上运行
+
+打包完成后有三种打开方式（按推荐顺序）：
+
+**方式一：解包目录（免安装、免 FUSE，最稳）**
+
+```bash
+./release/linux-unpacked/markdesk --disable-gpu
+```
+
+**方式二：AppImage**
+
+```bash
+chmod +x release/MarkDesk-<版本号>.AppImage
+./release/MarkDesk-<版本号>.AppImage --disable-gpu
+```
+
+在 WSL 或未安装 FUSE 的系统上会报 `libfuse.so.2` 缺失。两种解决办法任选：
+
+```bash
+# 办法 A：安装 libfuse2 后直接运行
+sudo apt install libfuse2
+
+# 办法 B：解压后运行（无需任何权限）
+./release/MarkDesk-<版本号>.AppImage --appimage-extract
+./squashfs-root/markdesk --disable-gpu
+```
+
+**方式三：开发模式（从源码运行）**
+
+```bash
+npm run dev
+```
+
+说明：`--disable-gpu` 不是必须的，但在 WSLg / 无硬件显卡的环境下强烈建议加上——
+否则 GPU 子进程的崩溃会级联拖垮 network/zygote 服务导致窗口偶发失灵（本项目
+e2e 测试也统一使用该参数）。
+
 ## 制作安装包
 
 所有平台的产物都输出到 `release/` 目录，由 [electron-builder](https://electron.build) 完成。
