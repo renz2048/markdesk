@@ -74,7 +74,9 @@ export function WysiwygEditor({
       attributes: {
         "aria-label": "Markdown 富文本编辑区",
         "data-testid": "wysiwyg-editor-content",
-        spellcheck: "true",
+        // Electron 内置拼写检查只有 en-US 词典，中文与代码标识符会被
+        // 整片标红波浪线，对中文文档场景是纯噪音，这里关闭。
+        spellcheck: "false",
       },
       dispatchTransaction(transaction) {
         const nextState = view.state.apply(transaction);

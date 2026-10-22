@@ -21,6 +21,7 @@ describe("Electron security configuration", () => {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      spellcheck: false,
       preload: expect.any(String),
     });
   });

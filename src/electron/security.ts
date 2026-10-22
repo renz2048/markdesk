@@ -6,6 +6,8 @@ export function secureWebPreferences(): Electron.WebPreferences {
     nodeIntegration: false,
     sandbox: true,
     webSecurity: true,
+    // 内置拼写检查仅含 en-US 词典，中文内容会被整片标红；关闭该服务。
+    spellcheck: false,
     preload: join(__dirname, "preload.js"),
   };
 }
