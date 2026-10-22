@@ -415,13 +415,24 @@ describe("atomic Markdown writes", () => {
     const tempPath = "/tmp/atomic.md.markdesk-tmp";
     // 前两行分别来自测试自身的 fingerprint() 读取与 writeMarkdownFile
     // 对既有内容的冲突校验读取；测试替身的 open() 总是记录默认 mode 0o600。
-    expect(fileSystem.openCalls).toEqual([
+    // Windows 不支持以 "r" 打开目录，syncDirectory 在 win32 上直接返回，
+    // 因此目录打开及其 fsync 只出现在 POSIX 平台。
+    const expectedOpenCalls: Array<{ path: string; flags: string; mode: number }> = [
       { path: "/tmp/atomic.md", flags: "r", mode: 0o600 },
       { path: "/tmp/atomic.md", flags: "r", mode: 0o600 },
       { path: tempPath, flags: "wx", mode: 0o600 },
-      { path: dirname("/tmp/atomic.md"), flags: "r", mode: 0o600 },
-    ]);
-    expect(fileSystem.handleSyncCalls.length).toBeGreaterThanOrEqual(2);
+    ];
+    let minimumSyncCount = 1;
+    if (process.platform !== "win32") {
+      expectedOpenCalls.push({
+        path: dirname("/tmp/atomic.md"),
+        flags: "r",
+        mode: 0o600,
+      });
+      minimumSyncCount += 1;
+    }
+    expect(fileSystem.openCalls).toEqual(expectedOpenCalls);
+    expect(fileSystem.handleSyncCalls.length).toBeGreaterThanOrEqual(minimumSyncCount);
     expect(fileSystem.renameCalls).toEqual([
       { from: tempPath, to: "/tmp/atomic.md" },
     ]);
