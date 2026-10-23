@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'" />
+    <!-- 生产构建经 file:// 加载时 onHeadersReceived 不生效，这份 meta 即
+         实际生效的 CSP，必须与 security.ts 的 contentSecurityPolicy()
+         保持一致（img-src 需含 markdesk-resource:，否则文档相对图片会被
+         CSP 拦截而无法显示）。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' markdesk-resource: https: http: data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
     <title>MarkDesk</title>
   </head>
   <body>
