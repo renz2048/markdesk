@@ -7,6 +7,7 @@ import {
 import { FileServiceError } from "../../src/electron/file-service";
 import { draftKeyForPath } from "../../src/electron/drafts";
 import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 
 const contentHash = (value: string) =>
   createHash("sha256").update(value, "utf8").digest("hex");
@@ -173,6 +174,17 @@ interface ControllerOptions {
   }>;
   fingerprint?: { hash: string; mtimeMs: number; size: number };
   writeExport?: (path: string, html: string) => Promise<void>;
+  writePastedImage?: (path: string, bytes: Uint8Array) => Promise<void>;
+  ensureDirectory?: (path: string) => Promise<void>;
+  watch?: (
+    path: string,
+    listener: (eventType: string) => void,
+  ) => FakeWatcher;
+  protocolHandle?: (
+    scheme: string,
+    handler: (request: { url: string }) => Promise<Response>,
+  ) => void;
+  readResourceFile?: (path: string) => Promise<Buffer>;
 }
 
 function createController(options: ControllerOptions = {}) {
@@ -296,18 +308,23 @@ function createController(options: ControllerOptions = {}) {
     },
     fingerprintFile: async () => ({ ...fingerprints }),
     writeExport: options.writeExport,
-    watch: (path: string, listener: (eventType: string) => void) => {
-      const watcher = new FakeWatcher(
-        path,
-        listener,
-        (closed) => {
-          const index = watchers.indexOf(closed);
-          if (index >= 0) watchers.splice(index, 1);
-        },
-      );
-      watchers.push(watcher);
-      return watcher;
-    },
+    writePastedImage: options.writePastedImage,
+    ensureDirectory: options.ensureDirectory,
+    protocolHandle: options.protocolHandle,
+    readResourceFile: options.readResourceFile,
+    watch: options.watch ??
+      ((path: string, listener: (eventType: string) => void) => {
+        const watcher = new FakeWatcher(
+          path,
+          listener,
+          (closed) => {
+            const index = watchers.indexOf(closed);
+            if (index >= 0) watchers.splice(index, 1);
+          },
+        );
+        watchers.push(watcher);
+        return watcher;
+      }),
   });
 
   controller.register();
@@ -710,6 +727,154 @@ describe("secure file IPC grants", () => {
       controller.openExternalPath("/tmp/notes.txt"),
     ).rejects.toMatchObject({ code: "invalid-path" });
   });
+
+  it("saves pasted images into the granted document's assets directory", async () => {
+    const window = new FakeWindow(1);
+    const written: Array<{ path: string; bytes: number[] }> = [];
+    const directories: string[] = [];
+    const { ipcMain } = createController({
+      windows: [window],
+      openPath: "/tmp/doc.md",
+      fileExists: async () => false,
+      writePastedImage: async (path, bytes) => {
+        written.push({ path, bytes: [...bytes] });
+      },
+      ensureDirectory: async (directory) => {
+        directories.push(directory);
+      },
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+    await ipcMain.invoke(markdeskChannels.readFile, {
+      sender: window.webContents,
+    }, "/tmp/doc.md");
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.savePastedImage,
+      { sender: window.webContents },
+      "/tmp/doc.md",
+      "paste-1.png",
+      new Uint8Array([1, 2, 3]),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { relativeSrc: "assets/paste-1.png" },
+    });
+    expect(directories).toEqual([join(dirname("/tmp/doc.md"), "assets")]);
+    expect(written).toEqual([
+      {
+        path: join(dirname("/tmp/doc.md"), "assets", "paste-1.png"),
+        bytes: [1, 2, 3],
+      },
+    ]);
+  });
+
+  it("deduplicates pasted image names", async () => {
+    const window = new FakeWindow(1);
+    let existsCalls = 0;
+    const written: string[] = [];
+    const { ipcMain } = createController({
+      windows: [window],
+      openPath: "/tmp/doc.md",
+      // 第一次检查（shot.png）返回已占用，其后（shot-2.png）返回可用。
+      fileExists: async () => existsCalls++ === 0,
+      writePastedImage: async (path) => {
+        written.push(path);
+      },
+      ensureDirectory: async () => {},
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.savePastedImage,
+      { sender: window.webContents },
+      "/tmp/doc.md",
+      "shot.png",
+      new Uint8Array([1]),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { relativeSrc: "assets/shot-2.png" },
+    });
+    expect(written).toEqual([
+      join(dirname("/tmp/doc.md"), "assets", "shot-2.png"),
+    ]);
+  });
+
+  it("rejects pasted images without a granted document or with unsafe names", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({
+      windows: [window],
+      openPath: "/tmp/doc.md",
+      fileExists: async () => false,
+      writePastedImage: async () => {
+        throw new Error("must not be called");
+      },
+      ensureDirectory: async () => {},
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+
+    const unopened = await ipcMain.invoke(
+      markdeskChannels.savePastedImage,
+      { sender: window.webContents },
+      "/tmp/unopened.md",
+      "paste-1.png",
+      new Uint8Array([1]),
+    );
+    expect(error(unopened)?.code).toBe("invalid-path");
+
+    for (const badName of ["a/b.png", "..\\x.png", "x.svg", "x.md", "x.png. "]) {
+      const denied = await ipcMain.invoke(
+        markdeskChannels.savePastedImage,
+        { sender: window.webContents },
+        "/tmp/doc.md",
+        badName,
+        new Uint8Array([1]),
+      );
+      expect(error(denied)?.code).toBe("invalid-argument");
+    }
+
+    const empty = await ipcMain.invoke(
+      markdeskChannels.savePastedImage,
+      { sender: window.webContents },
+      "/tmp/doc.md",
+      "ok.png",
+      new Uint8Array([]),
+    );
+    expect(error(empty)?.code).toBe("invalid-argument");
+  });
+
+  it("surfaces write failures for pasted images", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({
+      windows: [window],
+      openPath: "/tmp/doc.md",
+      fileExists: async () => false,
+      writePastedImage: async () => {
+        throw new FileServiceError("write-failed", "磁盘错误。");
+      },
+      ensureDirectory: async () => {},
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.savePastedImage,
+      { sender: window.webContents },
+      "/tmp/doc.md",
+      "paste-1.png",
+      new Uint8Array([1]),
+    );
+    expect(error(result)?.code).toBe("write-failed");
+  });
 });
 
 describe("secure recovery-draft IPC", () => {
@@ -827,6 +992,45 @@ describe("external-file watching", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("serves document images even when directory watching is unavailable", async () => {
+    const handlers: Array<(request: { url: string }) => Promise<Response>> =
+      [];
+    const readResources: string[] = [];
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({
+      windows: [window],
+      openPath: "/tmp/doc.md",
+      // UNC（\\wsl.localhost）等文件系统不支持目录事件：watch 抛错时
+      // 文档目录仍需登记，markdesk-resource 协议才能解析相对图片。
+      watch: () => {
+        throw new Error("ENOSYS: watching unsupported");
+      },
+      protocolHandle: (_scheme, handler) => {
+        handlers.push(handler);
+      },
+      readResourceFile: async (path) => {
+        readResources.push(path);
+        return Buffer.from("png-bytes");
+      },
+    });
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, {
+      sender: window.webContents,
+    });
+    await ipcMain.invoke(
+      markdeskChannels.readFile,
+      { sender: window.webContents },
+      "/tmp/doc.md",
+    );
+
+    expect(handlers).toHaveLength(1);
+    const response = await handlers[0]({
+      url: "markdesk-resource:assets/pic.png",
+    });
+    expect(response.status).toBe(200);
+    // “/tmp” 风格目录按 posix 语义解析，分隔符保持正斜杠。
+    expect(readResources).toEqual(["/tmp/assets/pic.png"]);
   });
 
   it("debounces a real external fingerprint change to granted renderers", async () => {
@@ -1128,6 +1332,14 @@ describe("markdesk-resource path resolution", () => {
 
   it("rejects everything when no document is open", () => {
     expect(resolveResourcePath([], "markdesk-resource:assets/pic.png"))
+      .toBeNull();
+  });
+
+  it("resolves against UNC document directories with win32 semantics", () => {
+    const dirs = ["\\\\wsl.localhost\\Ubuntu-26.04\\home\\dev\\notes"];
+    expect(resolveResourcePath(dirs, "markdesk-resource:assets/pic.png"))
+      .toBe("\\\\wsl.localhost\\Ubuntu-26.04\\home\\dev\\notes\\assets\\pic.png");
+    expect(resolveResourcePath(dirs, "markdesk-resource:..\\secret.png"))
       .toBeNull();
   });
 });

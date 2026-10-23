@@ -107,12 +107,22 @@ export const markdeskChannels = {
   closeRequested: "markdesk:close-requested",
   requestClose: "markdesk:request-close",
   cancelClose: "markdesk:cancel-close",
+  savePastedImage: "markdesk:save-pasted-image",
 } as const;
+
+export interface SavedImageAsset {
+  relativeSrc: string;
+}
 
 export interface MarkDeskRendererApi {
   chooseMarkdownFile(): Promise<string | null>;
   chooseSaveLocation(defaultName: string): Promise<string | null>;
   readFile(path: string): Promise<FileReadResult>;
+  savePastedImage(
+    docPath: string,
+    fileName: string,
+    data: ArrayBuffer,
+  ): Promise<SavedImageAsset>;
   writeFile(
     path: string,
     content: string,

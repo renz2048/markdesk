@@ -524,3 +524,76 @@ export async function writeExportFile(
     );
   }
 }
+
+const imageExtensions = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".avif",
+]);
+
+export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+export function isImagePath(path: unknown): path is string {
+  if (typeof path !== "string" || path.length === 0) return false;
+  if (path.length > MAX_MARKDOWN_PATH_LENGTH) return false;
+  if (/[\0-\x1f\u007f]/u.test(path)) return false;
+  if (!isAbsolute(path) && !win32.isAbsolute(path)) return false;
+
+  const extension = extname(path).toLowerCase();
+  const windowsExtension = win32.extname(path).toLowerCase();
+  return imageExtensions.has(extension) || imageExtensions.has(windowsExtension);
+}
+
+/**
+ * 原子写入粘贴的图片资源，临时文件 + 重命名策略与导出文件一致。
+ * 扩展名白名单有意排除 .svg：不落盘来源不可信的 SVG 内容。
+ */
+export async function writeImageFile(
+  path: string,
+  bytes: Uint8Array,
+  fileSystem: MarkdownFileSystem = nodeFileSystem,
+): Promise<void> {
+  if (!isImagePath(path)) {
+    throw new FileServiceError("invalid-path", "图片资源路径无效。");
+  }
+  if (bytes.byteLength === 0) {
+    throw new FileServiceError("invalid-argument", "图片内容为空。");
+  }
+  if (bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new FileServiceError("file-too-large", "图片不能超过 20 MiB。");
+  }
+
+  const temporaryPath = `${path}${temporarySuffix}`;
+  let handle: MarkdownFileHandle | undefined;
+  let ownsTemporary = false;
+  try {
+    handle = await fileSystem.open(temporaryPath, "wx", 0o600);
+    ownsTemporary = true;
+    await handle.writeFile(Buffer.from(bytes));
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fileSystem.rename(temporaryPath, path);
+    ownsTemporary = false;
+  } catch (error) {
+    await closeQuietly(handle);
+    if (ownsTemporary) {
+      await removeOwnedTemporary(temporaryPath, fileSystem);
+    }
+    if (error instanceof FileServiceError) throw error;
+    throw new FileServiceError("write-failed", "写入图片资源失败。", error);
+  }
+
+  try {
+    await syncDirectory(path, fileSystem);
+  } catch (error) {
+    throw new FileServiceError(
+      "write-failed",
+      "已写入图片资源，但目录同步失败。",
+      error,
+    );
+  }
+}

@@ -49,6 +49,12 @@ const rendererApi: MarkDeskRendererApi = {
     ),
   readFile: (path: string): Promise<FileReadResult> =>
     invokeResult(markdeskChannels.readFile, path),
+  savePastedImage: (
+    docPath: string,
+    fileName: string,
+    data: ArrayBuffer,
+  ) =>
+    invokeResult(markdeskChannels.savePastedImage, docPath, fileName, data),
   writeFile: (
     path: string,
     content: string,

@@ -5,11 +5,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { EditorView } from "prosemirror-view";
 import { TextSelection } from "prosemirror-state";
 import { parseMarkdown } from "../markdown/parser";
 import { serializeMarkdown } from "../markdown/serializer";
+import { ImageViewer, imageViewerTarget } from "./components/ImageViewer";
 import { OutlinePanel } from "./components/OutlinePanel";
 import { ReadView } from "./components/ReadView";
 import { SourceEditor } from "./components/SourceEditor";
@@ -55,6 +57,54 @@ type PendingFileAction =
   | { type: "close" };
 
 const DRAFT_SAVE_DELAY_MS = 500;
+
+// 粘贴图片兜底内嵌的大小上限（原始字节）：base64 放大约 4/3，
+// 需给 10MB 文档上限留出余量。
+const MAX_EMBEDDED_IMAGE_BYTES = 2 * 1024 * 1024;
+
+const imageTypeExtensions = new Map<string, string>([
+  ["image/png", "png"],
+  ["image/jpeg", "jpg"],
+  ["image/gif", "gif"],
+  ["image/webp", "webp"],
+  ["image/avif", "avif"],
+]);
+
+// 为粘贴的图片生成资源文件名：优先保留资源管理器复制带来的原始名，
+// 截图等无名文件退回时间戳名。类型不在写入白名单（如 SVG）时返回
+// null，由调用方直接降级内嵌。主进程会再做一次权威校验。
+function pastedImageName(file: File): string | null {
+  const extension = imageTypeExtensions.get(file.type);
+  if (!extension) return null;
+  const name = file.name ?? "";
+  if (
+    name.length > 0 &&
+    name.length <= 200 &&
+    !/[/\\]/u.test(name) &&
+    !/[\0-\x1f\u007f<>:"|?*]/u.test(name) &&
+    !/[. ]$/u.test(name) &&
+    /\.(?:png|jpe?g|gif|webp|avif)$/iu.test(name)
+  ) {
+    return name;
+  }
+  const now = new Date();
+  const pad = (value: number): string => `${value}`.padStart(2, "0");
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(
+    now.getDate(),
+  )}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `paste-${timestamp}.${extension}`;
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      resolve(typeof reader.result === "string" ? reader.result : "");
+    });
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsDataURL(file);
+  });
+}
 
 interface DraftQueueState {
   queue: Promise<void>;
@@ -145,6 +195,10 @@ export default function App() {
     null,
   );
   const [fileCollision, setFileCollision] = useState<string | null>(null);
+  const [imageViewer, setImageViewer] = useState<{
+    src: string;
+    alt: string;
+  } | null>(null);
 
   useEffect(() => {
     setSelectionPosition(0);
@@ -225,6 +279,56 @@ export default function App() {
     [outlineItems, selectionPosition],
   );
 
+  // 事件委托：双击编辑区/阅读区中的图片打开原图查看浮层（源码模式没有
+  // 渲染图片，无需处理）。
+  const handleWorkspaceDoubleClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const target = imageViewerTarget(event.target);
+      if (target) {
+        event.preventDefault();
+        setImageViewer(target);
+      }
+    },
+    [],
+  );
+
+  // 粘贴图片：默认经主进程写入文档目录的 assets/ 并插入相对路径；
+  // 文档未保存、类型不可落盘或写入失败时降级为 base64 内嵌。
+  const handlePasteImage = useCallback(
+    async (file: File): Promise<string | null> => {
+      const reportTooLarge = (): null => {
+        setFileActionError(
+          toFileActionError(
+            new Error(
+              "file-too-large\n图片过大：无法写入文档目录，且超过可内嵌的大小上限。",
+            ),
+          ),
+        );
+        return null;
+      };
+      const embed = async (): Promise<string | null> => {
+        if (file.size > MAX_EMBEDDED_IMAGE_BYTES) return reportTooLarge();
+        return fileToDataUrl(file);
+      };
+
+      const docPath = useDocumentStore.getState().filePath;
+      const fileName = docPath && pastedImageName(file);
+      if (!api || !docPath || !fileName) return embed();
+      try {
+        const asset = await api.savePastedImage(
+          docPath,
+          fileName,
+          await file.arrayBuffer(),
+        );
+        return asset.relativeSrc;
+      } catch {
+        // 目录只读或写入失败 → 降级内嵌。
+        return embed();
+      }
+    },
+    [api],
+  );
+
   const jumpToHeading = useCallback(
     (pos: number) => {
       if (!editorView) return;
@@ -233,9 +337,14 @@ export default function App() {
         Math.min(pos, editorView.state.doc.content.size),
       );
       const selection = TextSelection.near(resolvedPos, 1);
-      editorView.dispatch(
-        editorView.state.tr.setSelection(selection).scrollIntoView(),
-      );
+      editorView.dispatch(editorView.state.tr.setSelection(selection));
+      // scrollIntoView 只保证目标可见，标题会停在视口下缘；这里改为把
+      // 标题滚到视口顶部（留少量呼吸间距），与 Typora 的目录跳转一致。
+      const scroller = editorView.dom.closest<HTMLElement>(".editor");
+      if (scroller) {
+        const { top } = editorView.coordsAtPos(selection.from);
+        scroller.scrollTop += top - scroller.getBoundingClientRect().top - 8;
+      }
       editorView.focus();
     },
     [editorView],
@@ -937,7 +1046,12 @@ export default function App() {
               fileBusy={fileBusy}
               actionPending={pendingFileAction !== null}
             />
-            <div className="workspace" data-testid="workspace" ref={workspaceRef}>
+            <div
+              className="workspace"
+              data-testid="workspace"
+              ref={workspaceRef}
+              onDoubleClick={handleWorkspaceDoubleClick}
+            >
               <OutlinePanel
                 doc={doc}
                 onJump={jumpToHeading}
@@ -1011,6 +1125,7 @@ export default function App() {
                     initialCursor={restoredCursor}
                     sessionKey={sessionKey}
                     onChange={handleDocumentChange}
+                    onPasteImage={handlePasteImage}
                   />
                 ) : mode === "source" ? (
                   <SourceEditor
@@ -1030,6 +1145,13 @@ export default function App() {
       </EditorViewContext.Provider>
 
         <StatusBar fileName={fileName} dirty={dirty} mode={mode} />
+        {imageViewer !== null && (
+          <ImageViewer
+            src={imageViewer.src}
+            alt={imageViewer.alt}
+            onClose={() => setImageViewer(null)}
+          />
+        )}
       </main>
       {closeProtectionVisible ? (
         <CloseProtectionDialog

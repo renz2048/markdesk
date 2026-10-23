@@ -5,16 +5,18 @@ import {
   protocol,
 } from "electron";
 import { watch } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
-import { dirname, posix, win32 } from "node:path";
+import { mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { dirname, join, posix, win32 } from "node:path";
 import {
   fingerprint,
   FileServiceError,
   isFileFingerprint,
   isHtmlPath,
+  isImagePath,
   isMarkdownPath,
   readMarkdownFile,
   writeExportFile,
+  writeImageFile,
   writeMarkdownFile,
 } from "./file-service";
 import {
@@ -39,6 +41,7 @@ import {
   type RecentFile,
   type RecentFileStatus,
   type RecoveryDraft,
+  type SavedImageAsset,
   type RecoveryDraftInput,
   type RecoveryDraftSummary,
 } from "../shared/types";
@@ -129,6 +132,8 @@ export interface SecureFileIpcDependencies {
     listener: (eventType: string) => void,
   ) => FileWatcherLike;
   writeExport?: (path: string, html: string) => Promise<void>;
+  writePastedImage?: (path: string, bytes: Uint8Array) => Promise<void>;
+  ensureDirectory?: (path: string) => Promise<void>;
   protocolHandle?: (
     scheme: string,
     handler: (request: { url: string }) => Promise<Response>,
@@ -155,7 +160,7 @@ interface CloseRequest {
 }
 
 interface WatchedFileState {
-  watcher: FileWatcherLike;
+  watcher: FileWatcherLike | null;
   owners: Set<number>;
   timeout: ReturnType<typeof setTimeout> | null;
   closed: boolean;
@@ -257,7 +262,12 @@ export function resolveResourcePath(
     return null;
   }
   for (const directory of openDirectories) {
-    const pathMod = /^[a-zA-Z]:[\\/]/u.test(directory) ? win32 : posix;
+    // 盘符与 UNC（\\wsl.localhost\...、\\server\share）目录按 win32 语义
+    // 解析；UNC 若走 posix 语义，反斜杠不是分隔符，整个路径会被拼上
+    // cwd 变成无效路径，导致文档目录内的图片全部 404。
+    const pathMod = /^([a-zA-Z]:[\\/]|\\\\|\/\/)/u.test(directory)
+      ? win32
+      : posix;
     const base = pathMod.resolve(directory);
     const resolved = pathMod.resolve(directory, relative);
     if (resolved.startsWith(`${base}${pathMod.sep}`)) {
@@ -308,6 +318,35 @@ function defaultWindows(): BrowserWindowLike[] {
   return BrowserWindow.getAllWindows();
 }
 
+const RESOURCE_READ_TIMEOUT_MS = 2500;
+const RESOURCE_READ_ATTEMPTS = 3;
+
+const delay = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+// \\wsl.localhost 等 9P 共享上，紧跟在 mkdir/rename 之后的读取偶发长时间
+// 挂起（libuv 请求不可取消）；带超时的重试让协议在短暂卡顿后仍能返回
+// 图片，而不是让 <img> 永远等待。
+async function readResourceWithRetry(path: string): Promise<Buffer> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < RESOURCE_READ_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await delay(300);
+    try {
+      return await Promise.race([
+        readFile(path),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`resource read timeout: ${path}`));
+          }, RESOURCE_READ_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 function windowsReservedName(value: string): boolean {
   return /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(value);
 }
@@ -328,6 +367,25 @@ function defaultSaveName(value: unknown): string {
   return isMarkdownPath(`/__markdesk_default__/${value}`)
     ? value
     : `${value}.md`;
+}
+
+// 粘贴图片的资源名：沿用 defaultSaveName 的字符约束，但扩展名必须是
+// 图片白名单（无 .md 兜底），最终路径还会经 isImagePath 二次校验。
+function safeImageName(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 200 ||
+    /[/\\]/u.test(value) ||
+    /[\0-\x1f\u007f]/u.test(value) ||
+    /[<>:"|?*]/u.test(value) ||
+    windowsReservedName(value) ||
+    /[. ]$/u.test(value) ||
+    !isImagePath(`/__markdesk_assets__/${value}`)
+  ) {
+    throw new FileServiceError("invalid-argument", "图片文件名无效。");
+  }
+  return value;
 }
 
 export interface SecureFileIpcController {
@@ -362,6 +420,9 @@ export function createSecureFileIpcController(
   const fingerprintFile = dependencies.fingerprintFile ?? fingerprint;
   const watchFile = dependencies.watch ?? defaultWatchFile;
   const writeExport = dependencies.writeExport ?? writeExportFile;
+  const writePastedImage = dependencies.writePastedImage ?? writeImageFile;
+  const ensureDirectory = dependencies.ensureDirectory ??
+    ((path: string) => mkdir(path, { recursive: true }));
   const handleProtocol = dependencies.protocolHandle ??
     ((scheme: string, handler: (request: { url: string }) => Promise<Response>) => {
       // 单元测试环境没有 Electron 运行时（protocol 为 undefined），此时
@@ -374,7 +435,7 @@ export function createSecureFileIpcController(
       }
     });
   const readResourceFile = dependencies.readResourceFile ??
-    ((path: string) => readFile(path));
+    readResourceWithRetry;
   const grantsBySender = new Map<number, WindowFileGrants>();
   const closeRequests = new Map<number, CloseRequest>();
   const recentFilesListeners = new Set<RecentFilesListener>();
@@ -411,7 +472,7 @@ export function createSecureFileIpcController(
     state.closed = true;
     if (state.timeout) clearTimeout(state.timeout);
     watchedFiles.delete(canonical);
-    state.watcher.close();
+    state.watcher?.close();
   }
 
   function scheduleExternalCheck(canonical: string): void {
@@ -457,19 +518,31 @@ export function createSecureFileIpcController(
       return;
     }
 
+    const state: WatchedFileState = {
+      watcher: null,
+      owners: new Set([owner.sender.id]),
+      timeout: null,
+      closed: false,
+    };
+    // 登记必须无条件完成：markdesk-resource 协议以 watchedFiles 的键
+    // 推导文档目录。部分文件系统（如 \\wsl.localhost 等 UNC 路径）不
+    // 支持目录事件，watch 失败只损失外部变更通知，读写安全仍由指纹
+    // 校验兜底。
+    watchedFiles.set(canonical, state);
     try {
-      const state: WatchedFileState = {
-        watcher: watchFile(canonical, () => scheduleExternalCheck(canonical)),
-        owners: new Set([owner.sender.id]),
-        timeout: null,
-        closed: false,
-      };
-      state.watcher.once("error", () => closeWatchedFile(canonical, state));
-      watchedFiles.set(canonical, state);
+      state.watcher = watchFile(
+        canonical,
+        () => scheduleExternalCheck(canonical),
+      );
+      state.watcher.once("error", () => {
+        // 异步失败同样降级为“登记但不监听”，条目清理交给 sender
+        // 撤销路径（stopWatchingForSender / revoke）。
+        state.watcher?.close();
+        state.watcher = null;
+      });
       scheduleExternalCheck(canonical);
     } catch {
-      // Watching is an enhancement; guarded reads and fingerprint-checked
-      // writes remain the security and collision boundary.
+      state.watcher = null;
     }
   }
 
@@ -1018,6 +1091,67 @@ export function createSecureFileIpcController(
           grantsForSender(event.sender);
           closeRequests.get(event.sender.id)?.cancel();
           closeRequests.delete(event.sender.id);
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.savePastedImage,
+      async (
+        event,
+        docPath: unknown,
+        fileName: unknown,
+        data: unknown,
+      ): Promise<IpcResult<SavedImageAsset>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const canonical = await canonicalMarkdownPath(docPath);
+          if (
+            !grants.readPaths.has(canonical) &&
+            !grants.writePaths.has(canonical)
+          ) {
+            throw new FileServiceError(
+              "invalid-path",
+              "当前文档未在本窗口打开，无法写入图片资源。",
+            );
+          }
+          const safeName = safeImageName(fileName);
+          const bytes = data instanceof Uint8Array
+            ? data
+            : data instanceof ArrayBuffer
+              ? new Uint8Array(data)
+              : null;
+          if (!bytes || bytes.byteLength === 0) {
+            throw new FileServiceError("invalid-argument", "图片内容无效。");
+          }
+
+          // 资产固定写入文档目录的 assets/ 子目录。safeName 已拒绝所有
+          // 路径分隔符，join 结果不可能逃逸；包含校验仅作防御性兜底。
+          const assetsDirectory = join(dirname(canonical), "assets");
+          let candidate = safeName;
+          for (
+            let attempt = 2;
+            await fileExists(join(assetsDirectory, candidate));
+            attempt += 1
+          ) {
+            if (attempt > 100) {
+              throw new FileServiceError(
+                "write-failed",
+                "无法为图片资源分配唯一文件名。",
+              );
+            }
+            candidate = safeName.replace(/(\.[^.]+)$/u, `-${attempt}$1`);
+          }
+          const target = join(assetsDirectory, candidate);
+          const separator = target.includes(win32.sep)
+            ? win32.sep
+            : posix.sep;
+          if (!target.startsWith(assetsDirectory + separator)) {
+            throw new FileServiceError("invalid-path", "图片资源路径越界。");
+          }
+
+          await ensureDirectory(assetsDirectory);
+          await writePastedImage(target, bytes);
+          return { relativeSrc: `assets/${candidate}` };
         }),
     );
   }

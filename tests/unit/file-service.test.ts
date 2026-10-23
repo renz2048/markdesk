@@ -2,13 +2,16 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  MAX_IMAGE_BYTES,
   MAX_MARKDOWN_BYTES,
   MAX_MARKDOWN_PATH_LENGTH,
   detectNewline,
   fingerprint,
+  isImagePath,
   isMarkdownPath,
   normalizeNewline,
   readMarkdownFile,
+  writeImageFile,
   writeMarkdownFile,
 } from "../../src/electron/file-service";
 
@@ -520,5 +523,67 @@ describe("atomic Markdown writes", () => {
     ).rejects.toMatchObject({ code: "write-failed" });
     expect(fileSystem.unlinkCalls).toEqual(["/tmp/a.md.markdesk-tmp"]);
     expect(fileSystem.entries.get("/tmp/a.md")!.bytes.toString()).toBe("# Old\n");
+  });
+});
+
+describe("image asset writes", () => {
+  it("writes image bytes atomically with an exclusive temporary", async () => {
+    const fileSystem = new MemoryFileSystem();
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+
+    await writeImageFile("/tmp/assets/paste-1.png", bytes, fileSystem);
+
+    const entry = fileSystem.entries.get("/tmp/assets/paste-1.png")!;
+    expect(Buffer.from(entry.bytes)).toEqual(Buffer.from(bytes));
+    expect(entry.stats.mode).toBe(0o600);
+    expect(fileSystem.openCalls).toEqual([
+      {
+        path: "/tmp/assets/paste-1.png.markdesk-tmp",
+        flags: "wx",
+        mode: 0o600,
+      },
+    ]);
+    expect(fileSystem.renameCalls).toEqual([
+      {
+        from: "/tmp/assets/paste-1.png.markdesk-tmp",
+        to: "/tmp/assets/paste-1.png",
+      },
+    ]);
+    expect(fileSystem.entries.has("/tmp/assets/paste-1.png.markdesk-tmp"))
+      .toBe(false);
+  });
+
+  it("rejects non-image paths, empty and oversized payloads", async () => {
+    const fileSystem = new MemoryFileSystem();
+    await expect(
+      writeImageFile("/tmp/a.md", new Uint8Array([1]), fileSystem),
+    ).rejects.toMatchObject({ code: "invalid-path" });
+    await expect(
+      writeImageFile("/tmp/a.svg", new Uint8Array([1]), fileSystem),
+    ).rejects.toMatchObject({ code: "invalid-path" });
+    expect(isImagePath("/tmp/a.svg")).toBe(false);
+    expect(isImagePath("/tmp/a.webp")).toBe(true);
+    await expect(
+      writeImageFile("/tmp/a.png", new Uint8Array([]), fileSystem),
+    ).rejects.toMatchObject({ code: "invalid-argument" });
+    await expect(
+      writeImageFile(
+        "/tmp/a.png",
+        new Uint8Array(MAX_IMAGE_BYTES + 1),
+        fileSystem,
+      ),
+    ).rejects.toMatchObject({ code: "file-too-large" });
+    expect(fileSystem.openCalls).toEqual([]);
+  });
+
+  it("cleans the exclusive temporary after a failed image write", async () => {
+    const fileSystem = new MemoryFileSystem();
+    fileSystem.failHandleWrite = true;
+
+    await expect(
+      writeImageFile("/tmp/a.png", new Uint8Array([1, 2]), fileSystem),
+    ).rejects.toMatchObject({ code: "write-failed" });
+    expect(fileSystem.unlinkCalls).toEqual(["/tmp/a.png.markdesk-tmp"]);
+    expect(fileSystem.entries.has("/tmp/a.png")).toBe(false);
   });
 });

@@ -103,6 +103,49 @@ body {
   background: var(--outline-hover);
 }
 
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  overflow: auto;
+  padding: 32px;
+  background: rgb(10 13 18 / 88%);
+}
+
+.image-viewer img {
+  display: block;
+  margin: auto;
+  border-radius: 4px;
+  user-select: none;
+}
+
+/* 适配视口模式：整图按比例完整可见；放大模式由内联宽度控制。 */
+.image-viewer img[data-fit="true"] {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.image-viewer-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #ffffff55;
+  border-radius: 8px;
+  color: #ffffffcc;
+  background: #ffffff1a;
+  font: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.image-viewer-close:hover {
+  background: #ffffff33;
+}
+
 .outline-item:disabled {
   color: var(--muted-foreground);
   background: transparent;
