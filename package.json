@@ -1,7 +1,7 @@
 {
   "name": "markdesk",
   "productName": "MarkDesk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A secure single-file Markdown reader and editor",
   "main": "dist-electron/electron/main.js",
