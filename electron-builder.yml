@@ -4,8 +4,18 @@ directories:
   output: release
 files:
   - dist/**/*
+  - "!**/*.map"
   - dist-electron/**/*
   - package.json
+  # 主进程/preload 已完全打包（esbuild/tsc 输出无 npm 依赖），渲染端
+  # 依赖由 Vite 打进 dist——运行时不需要 node_modules，整棵裁掉。
+  - "!node_modules/**/*"
+# NSIS 负载用 LZMA 最大压缩（构建变慢，安装包显著变小）。
+compression: maximum
+# 只保留应用用到的语言包，裁掉 Electron 自带的其余 locale .pak。
+electronLanguages:
+  - zh-CN
+  - en-US
 asar: true
 fileAssociations:
   - ext: md
