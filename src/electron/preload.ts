@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import {
   markdeskChannels,
   type FileChangedEvent,
@@ -9,10 +9,13 @@ import {
   type FileWriteResult,
   type MarkDeskRendererApi,
   type OpenRecentFileEvent,
+  type PandocExportTargetName,
+  type PickedImageAsset,
   type RecentFileStatus,
   type RecoveryDraft,
   type RecoveryDraftInput,
   type RecoveryDraftSummary,
+  type ThemePreferenceSetting,
 } from "../shared/types";
 
 async function invokeResult<TValue>(
@@ -55,6 +58,48 @@ const rendererApi: MarkDeskRendererApi = {
     data: ArrayBuffer,
   ) =>
     invokeResult(markdeskChannels.savePastedImage, docPath, fileName, data),
+  pickImageAsset: (): Promise<PickedImageAsset | null> =>
+    invokeResult(markdeskChannels.pickImageAsset),
+  exportRenderedDocument: (
+    format: "pdf" | "png",
+    html: string,
+    defaultName: string,
+    assetsDir: string | null,
+  ): Promise<string | null> =>
+    invokeResult(
+      markdeskChannels.exportRendered,
+      format,
+      html,
+      defaultName,
+      assetsDir,
+    ),
+  setThemePreference: (theme: ThemePreferenceSetting): Promise<void> =>
+    invokeResult(markdeskChannels.setThemePreference, theme),
+  exportViaPandoc: (
+    target: PandocExportTargetName,
+    markdown: string,
+    defaultName: string,
+    docDir: string | null,
+  ): Promise<string | null> =>
+    invokeResult(
+      markdeskChannels.exportPandoc,
+      target,
+      markdown,
+      defaultName,
+      docDir,
+    ),
+  insertDroppedImage: (
+    docPath: string,
+    imagePath: string,
+  ): Promise<{ src: string }> =>
+    invokeResult(markdeskChannels.insertDroppedImage, docPath, imagePath),
+  checkImageGrants: (srcs: string[]): Promise<string[]> =>
+    invokeResult(markdeskChannels.checkImageGrants, srcs),
+  grantImagePaths: (srcs: string[]): Promise<string[]> =>
+    invokeResult(markdeskChannels.grantImagePaths, srcs),
+  // File.path 在新版 Electron 已移除；webUtils 是获取拖入文件路径的
+  // 官方途径，必须在 preload（node 环境）中调用。
+  getDroppedFilePath: (file: File): string => webUtils.getPathForFile(file),
   writeFile: (
     path: string,
     content: string,

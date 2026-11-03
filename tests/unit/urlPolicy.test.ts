@@ -68,7 +68,8 @@ describe("shared Markdown URL policy", () => {
       "",
       " ",
       "//example.com/a.png",
-      "\\\\example.com/a.png",
+      // 需求 4.5 起，UNC 形式的本地绝对路径图片（\\server\share\x.png）
+      // 被接受并保留原文，不再出现在拒绝清单里。
       "images\u0007/a.png",
       "javascript:alert(1)",
       "vbscript:msgbox(1)",
@@ -89,5 +90,24 @@ describe("shared Markdown URL policy", () => {
     expect(isExternalHttpUrl("//example.com")).toBe(false);
     expect(isExternalHttpUrl("javascript:alert(1)")).toBe(false);
     expect(isExternalHttpUrl("https://example.com/\u0000")).toBe(false);
+  });
+});
+
+describe("本地绝对路径图片（需求 4.5）", () => {
+  it("接受 Windows 盘符、UNC 与 POSIX 绝对路径并保留原文", () => {
+    expect(normalizeImageSrc("C:\\Users\\me\\pics\\a.png")).toBe(
+      "C:\\Users\\me\\pics\\a.png",
+    );
+    expect(normalizeImageSrc("\\\\server\\share\\b.jpg")).toBe(
+      "\\\\server\\share\\b.jpg",
+    );
+    expect(normalizeImageSrc("/home/me/c.webp")).toBe("/home/me/c.webp");
+  });
+
+  it("链接不接受绝对路径，协议相对地址仍被拒绝", () => {
+    expect(() => normalizeLinkHref("C:\\x\\y.html")).toThrow();
+    expect(() => normalizeImageSrc("//evil.example/a.png")).toThrow();
+    // 绝对路径只要扩展名是图片即可（显示授权在协议层另行校验）。
+    expect(() => normalizeImageSrc("C:\\a\\b.js")).not.toThrow();
   });
 });

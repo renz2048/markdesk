@@ -2,6 +2,7 @@ import { access, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _electron as electron, expect, test } from "@playwright/test";
+import { clickMenuItem } from "./helpers/menu";
 
 type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
 type Page = Awaited<ReturnType<ElectronApplication["firstWindow"]>>;
@@ -77,24 +78,33 @@ test("window.markdesk exposes only the documented API surface", async () => {
   );
   expect(keys).toEqual([
     "cancelClose",
+    "checkImageGrants",
     "chooseExportLocation",
     "chooseMarkdownFile",
     "chooseSaveLocation",
     "clearRecentFiles",
     "discardRecoveryDraft",
     "exportHtml",
+    "exportRenderedDocument",
+    "exportViaPandoc",
+    "getDroppedFilePath",
     "getRecentFiles",
+    "grantImagePaths",
+    "insertDroppedImage",
     "listRecoveryDrafts",
     "onCloseRequested",
     "onFileChanged",
     "onMenuCommand",
     "onOpenRecentFile",
     "onRecentFilesChanged",
+    "pickImageAsset",
     "readFile",
     "readRecentFile",
     "readRecoveryDraft",
     "requestClose",
+    "savePastedImage",
     "saveRecoveryDraft",
+    "setThemePreference",
     "writeFile",
   ]);
 });
@@ -139,7 +149,7 @@ test("exported HTML is sanitized end to end", async () => {
 
   // 新建文档，写入包含 HTML 注入面的内容，走真实导出管线。
   await page.getByTestId("welcome-new").click();
-  await page.getByTestId("mode-source").click();
+  await clickMenuItem(app, "模式", "源码模式");
   const source = page.getByTestId("source-editor-content");
   await source.click();
   await page.keyboard.type(
@@ -173,6 +183,6 @@ test("exported HTML is sanitized end to end", async () => {
   expect(html.toLowerCase()).not.toContain("<script");
   expect(html).not.toContain("onclick");
   // 导出不改变文档脏状态。
-  await expect(page.getByTestId("document-dirty-status")).toHaveText("未保存");
+  await expect(page).toHaveTitle("未命名● - MarkDesk");
 
 });

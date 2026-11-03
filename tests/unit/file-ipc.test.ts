@@ -175,6 +175,7 @@ interface ControllerOptions {
   fingerprint?: { hash: string; mtimeMs: number; size: number };
   writeExport?: (path: string, html: string) => Promise<void>;
   writePastedImage?: (path: string, bytes: Uint8Array) => Promise<void>;
+  runPandoc?: (args: string[]) => Promise<void>;
   ensureDirectory?: (path: string) => Promise<void>;
   watch?: (
     path: string,
@@ -185,6 +186,9 @@ interface ControllerOptions {
     handler: (request: { url: string }) => Promise<Response>,
   ) => void;
   readResourceFile?: (path: string) => Promise<Buffer>;
+  imageGrantsStoragePath?: string;
+  loadImageGrants?: (storagePath: string) => Promise<string[]>;
+  saveImageGrants?: (storagePath: string, paths: string[]) => Promise<void>;
 }
 
 function createController(options: ControllerOptions = {}) {
@@ -309,9 +313,13 @@ function createController(options: ControllerOptions = {}) {
     fingerprintFile: async () => ({ ...fingerprints }),
     writeExport: options.writeExport,
     writePastedImage: options.writePastedImage,
+    runPandoc: options.runPandoc,
     ensureDirectory: options.ensureDirectory,
     protocolHandle: options.protocolHandle,
     readResourceFile: options.readResourceFile,
+    imageGrantsStoragePath: options.imageGrantsStoragePath,
+    loadImageGrants: options.loadImageGrants,
+    saveImageGrants: options.saveImageGrants,
     watch: options.watch ??
       ((path: string, listener: (eventType: string) => void) => {
         const watcher = new FakeWatcher(
@@ -397,6 +405,8 @@ describe("secure file IPC grants", () => {
       markdeskChannels.discardRecoveryDraft,
       markdeskChannels.requestClose,
       markdeskChannels.cancelClose,
+      markdeskChannels.checkImageGrants,
+      markdeskChannels.grantImagePaths,
     ]) {
       const result = await ipcMain.invoke(channel, event);
       expect(error(result)?.code).toBe("unexpected-error");
@@ -1341,5 +1351,223 @@ describe("markdesk-resource path resolution", () => {
       .toBe("\\\\wsl.localhost\\Ubuntu-26.04\\home\\dev\\notes\\assets\\pic.png");
     expect(resolveResourcePath(dirs, "markdesk-resource:..\\secret.png"))
       .toBeNull();
+  });
+
+  it("放行已授权的文档目录外绝对路径图片（需求 4.5）", () => {
+    const granted = ["C:\\Pictures\\outside.png"];
+    const url = `markdesk-resource:absolute/${encodeURIComponent(granted[0])}`;
+    expect(resolveResourcePath(dirs, url, granted)).toBe(granted[0]);
+    // 未授权的绝对路径、非图片扩展名一律拒绝。
+    expect(resolveResourcePath(dirs, url)).toBeNull();
+    expect(resolveResourcePath(dirs, url, ["C:\\Other\\x.png"])).toBeNull();
+    const script = `markdesk-resource:absolute/${encodeURIComponent("C:\\x\\a.js")}`;
+    expect(resolveResourcePath(dirs, script, ["C:\\x\\a.js"])).toBeNull();
+  });
+});
+
+describe("本地图片显示授权（打开文档确认 + 持久化）", () => {
+  it("启动时恢复持久化授权，checkImageGrants 只返回未授权子集", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({
+      windows: [window],
+      imageGrantsStoragePath: "/state/image-grants.json",
+      loadImageGrants: async () => ["/pics/seed.png"],
+    });
+    const event = { sender: window.webContents };
+
+    const missing = await ipcMain.invoke(
+      markdeskChannels.checkImageGrants,
+      event,
+      ["/pics/seed.png", "/tmp/pending.png"],
+    );
+    expect(missing).toMatchObject({
+      ok: true,
+      value: ["/tmp/pending.png"],
+    });
+  });
+
+  it("grantImagePaths 授权后再次查询为空并整表落盘", async () => {
+    const window = new FakeWindow(1);
+    const saved: string[][] = [];
+    const { ipcMain } = createController({
+      windows: [window],
+      imageGrantsStoragePath: "/state/image-grants.json",
+      loadImageGrants: async () => [],
+      saveImageGrants: async (_storage, paths) => {
+        saved.push(paths);
+      },
+    });
+    const event = { sender: window.webContents };
+
+    const granted = await ipcMain.invoke(
+      markdeskChannels.grantImagePaths,
+      event,
+      ["/tmp/a.png", "/tmp/b.jpg"],
+    );
+    expect(granted).toMatchObject({
+      ok: true,
+      value: ["/tmp/a.png", "/tmp/b.jpg"],
+    });
+    expect(saved.at(-1)).toEqual(["/tmp/a.png", "/tmp/b.jpg"]);
+
+    const missing = await ipcMain.invoke(
+      markdeskChannels.checkImageGrants,
+      event,
+      ["/tmp/a.png", "/tmp/b.jpg"],
+    );
+    expect(missing).toMatchObject({ ok: true, value: [] });
+  });
+
+  it("拒绝非法路径列表（相对路径、非图片扩展名、非字符串、重复）", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({ windows: [window] });
+    const event = { sender: window.webContents };
+
+    for (const list of [
+      [],
+      "not-a-list",
+      ["relative/pic.png"],
+      ["/tmp/document.pdf"],
+      [123],
+      ["/tmp/a.png", "/tmp/a.png"],
+    ]) {
+      const result = await ipcMain.invoke(
+        markdeskChannels.grantImagePaths,
+        event,
+        list,
+      );
+      expect(error(result)?.code).toBe("invalid-argument");
+    }
+  });
+
+  it("未配置存储时授权仅存内存（不调用落盘）", async () => {
+    const window = new FakeWindow(1);
+    const saved: string[][] = [];
+    const { ipcMain } = createController({
+      windows: [window],
+      saveImageGrants: async (_storage, paths) => {
+        saved.push(paths);
+      },
+    });
+    const event = { sender: window.webContents };
+
+    await ipcMain.invoke(markdeskChannels.grantImagePaths, event, ["/tmp/x.png"]);
+    expect(saved).toEqual([]);
+    const missing = await ipcMain.invoke(
+      markdeskChannels.checkImageGrants,
+      event,
+      ["/tmp/x.png"],
+    );
+    expect(missing).toMatchObject({ ok: true, value: [] });
+  });
+
+  it("insertDroppedImage 授权目录外图片的同时持久化", async () => {
+    const window = new FakeWindow(1);
+    const saved: string[][] = [];
+    const { ipcMain } = createController({
+      windows: [window],
+      openPath: "/tmp/doc.md",
+      imageGrantsStoragePath: "/state/image-grants.json",
+      loadImageGrants: async () => [],
+      saveImageGrants: async (_storage, paths) => {
+        saved.push(paths);
+      },
+    });
+    const event = { sender: window.webContents };
+    await ipcMain.invoke(markdeskChannels.chooseMarkdownFile, event);
+    await ipcMain.invoke(markdeskChannels.readFile, event, "/tmp/doc.md");
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.insertDroppedImage,
+      event,
+      "/tmp/doc.md",
+      "/pics/outside.png",
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      value: { src: "/pics/outside.png" },
+    });
+    expect(saved.at(-1)).toEqual(["/pics/outside.png"]);
+  });
+});
+
+describe("Pandoc 导出（需求 4.6）", () => {
+  it("经系统 pandoc 转换并清理临时文件", async () => {
+    const window = new FakeWindow(1);
+    const calls: string[][] = [];
+    const exported: Array<{ path: string; content: string }> = [];
+    const { ipcMain } = createController({
+      windows: [window],
+      savePath: "/out/note.docx",
+      writeExport: async (path, content) => {
+        exported.push({ path, content });
+      },
+      runPandoc: async (args) => {
+        calls.push(args);
+      },
+    });
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.exportPandoc,
+      { sender: window.webContents },
+      "docx",
+      "# 标题\n",
+      "note",
+      null,
+    );
+
+    expect(result).toMatchObject({ ok: true, value: "/out/note.docx" });
+    // 可用性探测 + 转换调用各一次。
+    expect(calls[0]).toEqual(["--version"]);
+    expect(calls[1][0]).toMatch(/\.markdesk-pandoc-[\w-]+\.md$/u);
+    expect(calls[1]).toContain("-o");
+    expect(calls[1]).toContain("/out/note.docx");
+    expect(calls[1]).toContain("-t");
+    expect(calls[1]).toContain("docx");
+    // 临时 markdown 内容即导出文本。
+    expect(exported).toHaveLength(1);
+    expect(exported[0].content).toBe("# 标题\n");
+  });
+
+  it("未安装 pandoc 时返回 pandoc-missing 错误", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({
+      windows: [window],
+      savePath: "/out/note.epub",
+      runPandoc: async () => {
+        throw new Error("spawn pandoc ENOENT");
+      },
+    });
+
+    const result = await ipcMain.invoke(
+      markdeskChannels.exportPandoc,
+      { sender: window.webContents },
+      "epub",
+      "# x\n",
+      "note",
+      null,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "pandoc-missing" },
+    });
+  });
+
+  it("拒绝未知导出目标", async () => {
+    const window = new FakeWindow(1);
+    const { ipcMain } = createController({ windows: [window] });
+    const result = await ipcMain.invoke(
+      markdeskChannels.exportPandoc,
+      { sender: window.webContents },
+      "exe",
+      "# x\n",
+      "note",
+      null,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "invalid-argument" },
+    });
   });
 });

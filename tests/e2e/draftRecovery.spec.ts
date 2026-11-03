@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _electron as electron, expect, test } from "@playwright/test";
+import { clickMenuItem } from "./helpers/menu";
 
 type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
 
@@ -56,11 +57,11 @@ test("restores a debounced unsaved draft after a forced shutdown", async () => {
   // 在源码模式输入草稿内容：Markdown 结构即输入文本本身，恢复后还能
   // 验证草稿记录的编辑模式一并还原。
   await firstPage.getByTestId("welcome-new").click();
-  await firstPage.getByTestId("mode-source").click();
+  await clickMenuItem(firstApp, "模式", "源码模式");
   const source = firstPage.getByTestId("source-editor-content");
   await source.click();
   await firstPage.keyboard.type("# Draft recovery\n未保存内容");
-  await expect(firstPage.getByTestId("document-dirty-status")).toHaveText("未保存");
+  await expect(firstPage).toHaveTitle("未命名● - MarkDesk");
   await firstPage.waitForTimeout(800);
 
   await killMarkDesk(firstApp);
@@ -75,11 +76,11 @@ test("restores a debounced unsaved draft after a forced shutdown", async () => {
   const restoredSource = secondPage.getByTestId("source-editor-content");
   await expect(restoredSource).toContainText("# Draft recovery");
   await expect(restoredSource).toContainText("未保存内容");
-  await expect(secondPage.getByTestId("document-dirty-status")).toHaveText("未保存");
+  await expect(secondPage).toHaveTitle("未命名● - MarkDesk");
   await expect(secondPage.getByTestId("recovery-dialog")).toHaveCount(0);
 
   // 切回 WYSIWYG 验证模型解析正常（标题成为 h1）。
-  await secondPage.getByTestId("mode-wysiwyg").click();
+  await clickMenuItem(secondApp, "模式", "所见即所得模式");
   await expect(
     secondPage.getByTestId("wysiwyg-editor-content").locator("h1"),
   ).toHaveText("Draft recovery");
@@ -128,7 +129,7 @@ test("watches external changes and offers collision recovery choices", async () 
   await writeFile(markdownPath, "# External two\n", "utf8");
   await expect(page.getByTestId("file-changed-notice")).toBeVisible();
 
-  await page.getByTestId("file-save").click();
+  await clickMenuItem(app, "文件", "保存");
   await expect(page.getByTestId("file-collision-dialog")).toBeVisible();
   await expect(page.getByTestId("file-collision-overwrite")).toBeVisible();
   await expect(page.getByTestId("file-collision-reload")).toBeVisible();

@@ -6,22 +6,40 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { EditorView } from "prosemirror-view";
 import { TextSelection } from "prosemirror-state";
+import type { Command } from "prosemirror-state";
+import {
+  clearFormatting,
+  demoteHeading,
+  insertHorizontalRule,
+  insertImage,
+  insertTable,
+  promoteHeading,
+  setBlockquote,
+  setCodeBlock,
+  setHeading,
+  setParagraph,
+  toggleBulletList,
+  toggleMarkByName,
+  toggleOrderedList,
+  toggleTaskList,
+} from "./editor/commands";
 import { parseMarkdown } from "../markdown/parser";
 import { serializeMarkdown } from "../markdown/serializer";
+import { editorImageSrc, isLocalAbsolutePath } from "../markdown/schema";
 import { ImageViewer, imageViewerTarget } from "./components/ImageViewer";
-import { OutlinePanel } from "./components/OutlinePanel";
-import { ReadView } from "./components/ReadView";
-import { SourceEditor } from "./components/SourceEditor";
-import { StatusBar } from "./components/StatusBar";
 import {
   EditorViewContext,
   SetEditorSelectionContext,
   SetEditorViewContext,
-  Toolbar,
-} from "./components/Toolbar";
+} from "./components/EditorContexts";
+import { OutlinePanel } from "./components/OutlinePanel";
+import { ReadView } from "./components/ReadView";
+import { SourceEditor } from "./components/SourceEditor";
+import { StatusBar } from "./components/StatusBar";
 import { WysiwygEditor } from "./components/WysiwygEditor";
 import { activeOutlinePosition, outlineFromDoc } from "./editor/outline";
 import { buildExportHtml } from "./editor/exportHtml";
@@ -39,24 +57,38 @@ import type {
   FileWriteResult,
   MenuCommand,
   NewlinePreference,
+  PandocExportTargetName,
   RecentFileStatus,
   RecoveryDraft,
   RecoveryDraftInput,
 } from "../shared/types";
+import { localImageExtensions } from "../shared/types";
+import type { Node as ProseMirrorNode } from "prosemirror-model";
 
-const modeLabels = {
-  wysiwyg: "所见即所得",
-  source: "源码",
-  read: "阅读",
-} as const;
-
-const modes = Object.keys(modeLabels) as EditorMode[];
 type PendingFileAction =
   | { type: "new" }
   | { type: "open"; path?: string }
   | { type: "close" };
 
 const DRAFT_SAVE_DELAY_MS = 500;
+
+// 侧栏宽度可拖拽调节，并在本地记忆（Typora 也记忆侧栏宽度）。
+// 默认宽度约为旧版 250px 的五分之三（需求 4.1）。
+const OUTLINE_WIDTH_STORAGE_KEY = "markdesk:outline-width";
+const OUTLINE_MIN_WIDTH = 120;
+const OUTLINE_MAX_WIDTH = 480;
+const OUTLINE_DEFAULT_WIDTH = 150;
+
+function loadOutlineWidth(): number {
+  const stored = window.localStorage.getItem(OUTLINE_WIDTH_STORAGE_KEY);
+  if (stored === null) return OUTLINE_DEFAULT_WIDTH;
+  const value = Number(stored);
+  if (!Number.isFinite(value)) return OUTLINE_DEFAULT_WIDTH;
+  return Math.min(
+    Math.max(Math.round(value), OUTLINE_MIN_WIDTH),
+    OUTLINE_MAX_WIDTH,
+  );
+}
 
 // 粘贴图片兜底内嵌的大小上限（原始字节）：base64 放大约 4/3，
 // 需给 10MB 文档上限留出余量。
@@ -112,10 +144,52 @@ interface DraftQueueState {
   activeKey: string | null;
 }
 
-const themeLabels: Record<ThemePreference, string> = {
-  light: "浅色",
-  dark: "深色",
-  system: "跟随系统",
+
+// 原生菜单「格式/段落」命令到 ProseMirror 命令的映射，仅在
+// 所见即所得模式下生效（源码/阅读模式没有富文本命令可应用）。
+const menuFormattingCommands: Partial<Record<MenuCommand, Command>> = {
+  "format-bold": toggleMarkByName("strong"),
+  "format-italic": toggleMarkByName("em"),
+  "format-strikethrough": toggleMarkByName("strikethrough"),
+  "format-code": toggleMarkByName("code"),
+  "format-clear": clearFormatting(),
+  "paragraph-paragraph": setParagraph(),
+  "paragraph-heading-1": setHeading(1),
+  "paragraph-heading-2": setHeading(2),
+  "paragraph-heading-3": setHeading(3),
+  "paragraph-heading-4": setHeading(4),
+  "paragraph-heading-5": setHeading(5),
+  "paragraph-heading-6": setHeading(6),
+  "paragraph-heading-promote": promoteHeading(),
+  "paragraph-heading-demote": demoteHeading(),
+  "paragraph-quote": setBlockquote(),
+  "paragraph-code-block": setCodeBlock(),
+  "paragraph-bullet-list": toggleBulletList(),
+  "paragraph-ordered-list": toggleOrderedList(),
+  "paragraph-task-list": toggleTaskList(),
+  "paragraph-horizontal-rule": insertHorizontalRule(),
+  "paragraph-table": insertTable(),
+};
+
+// Pandoc 导出目标（主进程转换；未安装 Pandoc 时报错提示）。
+const pandocExportTargets = new Set<string>([
+  "docx",
+  "odt",
+  "epub",
+  "latex",
+  "mediawiki",
+]);
+
+const isPandocTarget = (
+  format: string,
+): format is PandocExportTargetName => pandocExportTargets.has(format);
+
+const menuThemeCommands: Partial<
+  Record<MenuCommand, ThemePreference>
+> = {
+  "theme-light": "light",
+  "theme-dark": "dark",
+  "theme-system": "system",
 };
 
 function normalizeForSave(
@@ -130,6 +204,38 @@ function normalizeForSave(
 
 function fileNameFromPath(path: string): string {
   return path.split(/[\\/]/u).filter(Boolean).at(-1) ?? "未命名.md";
+}
+
+function hasLocalImageExtension(src: string): boolean {
+  const dot = src.lastIndexOf(".");
+  if (dot < 0 || dot === src.length - 1) return false;
+  return localImageExtensions.has(src.slice(dot + 1).toLowerCase());
+}
+
+/** 拆出文件名与所在目录（两种分隔符都接受），用于授权清单展示。 */
+function splitLocalImagePath(src: string): { name: string; directory: string } {
+  const index = Math.max(src.lastIndexOf("/"), src.lastIndexOf("\\"));
+  if (index < 0) return { name: src, directory: "" };
+  return { name: src.slice(index + 1), directory: src.slice(0, index) };
+}
+
+/**
+ * 收集文档中引用的、位于文档目录外的本地绝对路径图片（需要用户
+ * 显式授权后 markdesk-resource 协议才会放行）。
+ */
+function collectLocalImageSrcs(doc: ProseMirrorNode): string[] {
+  const srcs: string[] = [];
+  const seen = new Set<string>();
+  doc.descendants((node) => {
+    if (node.type.name !== "image") return true;
+    const src = String(node.attrs.src ?? "");
+    if (!isLocalAbsolutePath(src) || seen.has(src)) return true;
+    if (!hasLocalImageExtension(src)) return true;
+    seen.add(src);
+    srcs.push(src);
+    return true;
+  });
+  return srcs;
 }
 
 export default function App() {
@@ -171,6 +277,12 @@ export default function App() {
     cursor: number;
     scrollTop: number;
   } | null>(null);
+  // 需求 5.2：模式切换前记录滚动比例（各模式文档高度不同，像素值不可
+  // 直接复用），切换后按比例恢复，避免视图回到顶部。
+  const modeViewRatioRef = useRef<{
+    ratio: number;
+    targetMode: EditorMode;
+  } | null>(null);
   const api = typeof window === "undefined" ? undefined : window.markdesk;
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [selectionPosition, setSelectionPosition] = useState(0);
@@ -199,6 +311,40 @@ export default function App() {
     src: string;
     alt: string;
   } | null>(null);
+  // 文档引用了未授权的目录外本地图片时向用户询问（打开文档时检测）。
+  const [pendingLocalImages, setPendingLocalImages] = useState<string[]>([]);
+  const [outlineWidth, setOutlineWidth] = useState(loadOutlineWidth);
+  const [sidebarVisible, setSidebarVisible] = useState(true);
+
+  // 拖拽分隔条调节侧栏宽度：指针捕获保证移出元素仍持续跟踪。
+  const startOutlineResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const target = event.currentTarget;
+      target.setPointerCapture(event.pointerId);
+      let latestWidth = outlineWidth;
+      const onMove = (moveEvent: PointerEvent): void => {
+        latestWidth = Math.min(
+          Math.max(Math.round(moveEvent.clientX), OUTLINE_MIN_WIDTH),
+          OUTLINE_MAX_WIDTH,
+        );
+        setOutlineWidth(latestWidth);
+      };
+      const finish = (): void => {
+        target.removeEventListener("pointermove", onMove);
+        target.removeEventListener("pointerup", finish);
+        target.removeEventListener("pointercancel", finish);
+        window.localStorage.setItem(
+          OUTLINE_WIDTH_STORAGE_KEY,
+          String(latestWidth),
+        );
+      };
+      target.addEventListener("pointermove", onMove);
+      target.addEventListener("pointerup", finish);
+      target.addEventListener("pointercancel", finish);
+    },
+    [outlineWidth],
+  );
 
   useEffect(() => {
     setSelectionPosition(0);
@@ -231,6 +377,103 @@ export default function App() {
     if (editor) editor.scrollTop = pending.scrollTop;
   }, [mode, sessionKey]);
 
+  useEffect(() => {
+    const pending = modeViewRatioRef.current;
+    if (!pending) return;
+    // 只在真正切换到目标模式时消费；切换被拒绝（模式未变）则丢弃，
+    // 防止陈旧比例作用到之后打开的文档上。
+    modeViewRatioRef.current = null;
+    if (pending.targetMode !== mode) return;
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    // 新模式的 .editor 刚挂载（源码模式的 CodeMirror 还要异步测量），
+    // 分帧多次应用才能拿到最终 scrollHeight。
+    const apply = (): void => {
+      const editor = workspace.querySelector<HTMLElement>(".editor");
+      if (!editor) return;
+      const scrollRange = editor.scrollHeight - editor.clientHeight;
+      if (scrollRange > 0) editor.scrollTop = pending.ratio * scrollRange;
+    };
+    const raf = requestAnimationFrame(apply);
+    const timers = [60, 200].map((delay) => window.setTimeout(apply, delay));
+    return () => {
+      cancelAnimationFrame(raf);
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [mode, sessionKey]);
+
+  // 打开文档（sessionKey 变化）时检测目录外的本地绝对路径图片：
+  // 已授权的直接显示，未授权的询问用户一次（授权持久化在主进程，
+  // 跨会话记忆；拒绝仅本次不显示，下次打开再询问）。
+  useEffect(() => {
+    const srcs = collectLocalImageSrcs(useDocumentStore.getState().doc);
+    if (srcs.length === 0 || !api) {
+      setPendingLocalImages([]);
+      return undefined;
+    }
+    let cancelled = false;
+    void api
+      .checkImageGrants(srcs)
+      .then((missing) => {
+        if (!cancelled) setPendingLocalImages(missing);
+      })
+      .catch(() => {
+        // 查询失败不阻塞编辑，图片保持阻止状态。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, sessionKey]);
+
+  // 图片此前已被资源协议拒绝（403）；对 absolute/ 形式的 img 重新赋值
+  // src 触发重载，无需重建编辑器。指定 onlySrc 时只刷新那一张。
+  const refreshAbsoluteImages = useCallback((onlySrc?: string): void => {
+    requestAnimationFrame(() => {
+      const shell = shellRef.current;
+      if (!shell) return;
+      const wanted =
+        onlySrc === undefined ? null : editorImageSrc(onlySrc);
+      for (const img of shell.querySelectorAll<HTMLImageElement>(
+        'img[src^="markdesk-resource:absolute/"]',
+      )) {
+        if (wanted === null || img.getAttribute("src") === wanted) {
+          img.setAttribute("src", img.getAttribute("src") ?? "");
+        }
+      }
+    });
+  }, []);
+
+  const allowLocalImages = useCallback(async (): Promise<void> => {
+    const srcs = pendingLocalImages;
+    if (!api || srcs.length === 0) return;
+    try {
+      await api.grantImagePaths(srcs);
+    } catch (error) {
+      setFileActionError(toFileActionError(error));
+      return;
+    }
+    setPendingLocalImages([]);
+    refreshAbsoluteImages();
+  }, [api, pendingLocalImages, refreshAbsoluteImages]);
+
+  /** 允许单张图片：从清单移除并只刷新该图。 */
+  const allowLocalImage = useCallback(
+    async (src: string): Promise<void> => {
+      if (!api) return;
+      try {
+        await api.grantImagePaths([src]);
+      } catch (error) {
+        setFileActionError(toFileActionError(error));
+        return;
+      }
+      setPendingLocalImages((pending) =>
+        pending.filter((item) => item !== src),
+      );
+      refreshAbsoluteImages(src);
+    },
+    [api, refreshAbsoluteImages],
+  );
+
   useLayoutEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const updateSystemTheme = () => setSystemPrefersDark(mediaQuery.matches);
@@ -244,6 +487,13 @@ export default function App() {
       ? "dark"
       : "light"
     : themePreference;
+
+  // 主题选择移入原生菜单（单选状态），渲染端变更后同步主进程。
+  useEffect(() => {
+    void api?.setThemePreference(themePreference).catch(() => {
+      // 菜单勾选状态同步失败不影响实际主题生效。
+    });
+  }, [api, themePreference]);
 
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -549,33 +799,122 @@ export default function App() {
     }
   }, [api, fileFingerprint, persistCurrentDocument]);
 
-  const exportDocument = useCallback(async (): Promise<void> => {
-    if (!api) return;
-    const revision = lifecycleRef.current.beginOperation();
-    if (revision === null) return;
+  // 导出：HTML 直接写文件；PDF/PNG 由主进程在隐藏窗口中渲染导出；
+  // Word/OpenOffice/Epub/LaTeX/MediaWiki 经系统 Pandoc 转换。
+  // 临时文件与文档同目录以解析相对图片路径，未保存文档传 null
+  //（其图片此时均为 data URL，任何目录都能渲染）。
+  const exportDocument = useCallback(
+    async (
+      format: "html" | "pdf" | "png" | PandocExportTargetName,
+    ): Promise<void> => {
+      if (!api) return;
+      const revision = lifecycleRef.current.beginOperation();
+      if (revision === null) return;
 
-    setFileBusy(true);
-    setFileActionError(null);
+      setFileBusy(true);
+      setFileActionError(null);
+      try {
+        const state = useDocumentStore.getState();
+        const baseName = state.fileName.replace(/\.(md|markdown)$/iu, "");
+        const savedPath = state.filePath;
+        const docDir = savedPath
+          ? savedPath.replace(/[\\/][^\\/]+$/u, "")
+          : null;
+
+        if (isPandocTarget(format)) {
+          // Pandoc 目标：以 Markdown 文本为源。
+          const markdown =
+            state.mode === "source"
+              ? state.sourceText
+              : serializeMarkdown(state.doc);
+          await api.exportViaPandoc(format, markdown, baseName, docDir);
+        } else if (format === "html") {
+          const doc = state.mode === "source"
+            ? parseMarkdown(state.sourceText)
+            : state.doc;
+          const target = await api.chooseExportLocation(
+            `${baseName}.html`,
+          );
+          if (!target) return;
+          await api.exportHtml(
+            target,
+            buildExportHtml(doc, resolvedTheme === "dark" ? "dark" : "light"),
+          );
+        } else {
+          const doc = state.mode === "source"
+            ? parseMarkdown(state.sourceText)
+            : state.doc;
+          const html = buildExportHtml(
+            doc,
+            resolvedTheme === "dark" ? "dark" : "light",
+          );
+          await api.exportRenderedDocument(
+            format,
+            html,
+            `${baseName}.${format === "pdf" ? "pdf" : "png"}`,
+            docDir,
+          );
+        }
+        // 导出是只读的旁路操作：不改变活动文档的脏状态。
+      } catch (error) {
+        setFileActionError(toFileActionError(error));
+      } finally {
+        lifecycleRef.current.endOperation();
+        setFileBusy(false);
+      }
+    },
+    [api, resolvedTheme],
+  );
+
+  // 拖入本地图片（需求 4.5）：已保存文档时由主进程判定路径归属
+  //（文档目录内→相对路径；目录外→绝对路径并登记显示授权）；未保存
+  // 文档复用粘贴流程内嵌 data URL。
+  const handleDropImage = useCallback(
+    async (file: File): Promise<string | null> => {
+      const docPath = useDocumentStore.getState().filePath;
+      let imagePath = "";
+      try {
+        imagePath = api?.getDroppedFilePath(file) ?? "";
+      } catch {
+        imagePath = "";
+      }
+      if (api && docPath && imagePath) {
+        try {
+          const { src } = await api.insertDroppedImage(docPath, imagePath);
+          return src;
+        } catch (error) {
+          // 路径判定失败（如文档未授权）时降级为内嵌。
+          setFileActionError(toFileActionError(error));
+          return handlePasteImage(file);
+        }
+      }
+      return handlePasteImage(file);
+    },
+    [api, handlePasteImage],
+  );
+
+  // 「格式 → 图像」：选择图片文件后复用粘贴图片的资产流程
+  // （保存文档 → assets/ 相对路径；未保存 → data URL 内嵌）。
+  const insertImageFromDialog = useCallback(async (): Promise<void> => {
+    if (!api || !editorView || mode !== "wysiwyg") return;
+    let picked: { name: string; bytes: ArrayBuffer } | null = null;
     try {
-      const state = useDocumentStore.getState();
-      const defaultName = state.fileName.replace(/\.(md|markdown)$/iu, "") +
-        ".html";
-      const target = await api.chooseExportLocation(defaultName);
-      if (!target) return;
-
-      const doc = state.mode === "source"
-        ? parseMarkdown(state.sourceText)
-        : state.doc;
-      const html = buildExportHtml(doc, resolvedTheme === "dark" ? "dark" : "light");
-      await api.exportHtml(target, html);
-      // 导出是只读的旁路操作：不改变活动文档的脏状态。
+      picked = await api.pickImageAsset();
     } catch (error) {
       setFileActionError(toFileActionError(error));
-    } finally {
-      lifecycleRef.current.endOperation();
-      setFileBusy(false);
+      return;
     }
-  }, [api, resolvedTheme]);
+    if (!picked) return;
+    const file = new File([picked.bytes], picked.name);
+    const src = await handlePasteImage(file);
+    if (!src) return;
+    editorView.focus();
+    insertImage(src, picked.name.replace(/\.[^.]+$/u, ""))(
+      editorView.state,
+      editorView.dispatch,
+      editorView,
+    );
+  }, [api, editorView, handlePasteImage, mode]);
 
   const reloadFromDisk = useCallback(async (): Promise<boolean> => {
     if (!api) return false;
@@ -878,6 +1217,17 @@ export default function App() {
       if (state.filePath === null && !state.dirty) {
         createUntitledDocument();
       }
+      // 需求 5.2：切换前记录当前滚动比例，恢复时按新模式的文档高度折算。
+      const container = workspaceRef.current?.querySelector<HTMLElement>(
+        ".editor",
+      );
+      if (container) {
+        const scrollRange = container.scrollHeight - container.clientHeight;
+        modeViewRatioRef.current = {
+          ratio: scrollRange > 0 ? container.scrollTop / scrollRange : 0,
+          targetMode: nextMode,
+        };
+      }
       transitionMode(nextMode);
     },
     [createUntitledDocument, transitionMode],
@@ -897,20 +1247,47 @@ export default function App() {
       else if (command === "open") requestFileAction({ type: "open" });
       else if (command === "save") void saveDocument();
       else if (command === "save-as") void saveDocumentAs();
-      else if (command === "export-html") void exportDocument();
+      else if (command === "export-html") void exportDocument("html");
+      else if (command === "export-pdf") void exportDocument("pdf");
+      else if (command === "export-image") void exportDocument("png");
+      else if (command === "export-docx") void exportDocument("docx");
+      else if (command === "export-odt") void exportDocument("odt");
+      else if (command === "export-epub") void exportDocument("epub");
+      else if (command === "export-latex") void exportDocument("latex");
+      else if (command === "export-mediawiki") {
+        void exportDocument("mediawiki");
+      }
       else if (command === "toggle-source") handleModeChange("source");
       else if (command === "toggle-read") handleModeChange("read");
       else if (command === "toggle-wysiwyg") handleModeChange("wysiwyg");
+      else if (command === "format-image") {
+        void insertImageFromDialog();
+      } else {
+        const theme = menuThemeCommands[command];
+        if (theme) {
+          setThemePreference(theme);
+          return;
+        }
+        const formatting = menuFormattingCommands[command];
+        if (formatting && mode === "wysiwyg" && editorView) {
+          editorView.focus();
+          formatting(editorView.state, editorView.dispatch, editorView);
+        }
+      }
     },
     [
+      editorView,
       exportDocument,
       fileCollision,
       handleModeChange,
+      insertImageFromDialog,
+      mode,
       openDocument,
       recoveryDraft,
       requestFileAction,
       saveDocument,
       saveDocumentAs,
+      setThemePreference,
     ],
   );
 
@@ -985,6 +1362,22 @@ export default function App() {
   // （规范 9.2），而“新建”始终回到欢迎页。
   const showWelcome =
     filePath === null && !dirty && !editorEngaged;
+
+  // 窗口标题栏（Electron 会把 document.title 同步到原生标题栏）：
+  // 欢迎页仅显示应用名；打开的文档为 `文件名 - MarkDesk`，有未保存
+  // 修改时在文件名后加一个醒目的圆点；未保存的新建文档显示 `未命名`。
+  // 原生标题栏无法加粗局部文字，用最重的圆点字形（●）保证清晰可见。
+  useEffect(() => {
+    if (showWelcome) {
+      document.title = "MarkDesk";
+      return;
+    }
+    const dot = dirty ? "●" : "";
+    document.title = filePath === null
+      ? `未命名${dot} - MarkDesk`
+      : `${fileName}${dot} - MarkDesk`;
+  }, [dirty, fileName, filePath, showWelcome]);
+
   const modalNoticeVisible =
     fileCollision !== null || recoveryDraft !== null;
   const closeProtectionVisible =
@@ -1033,31 +1426,31 @@ export default function App() {
       <EditorViewContext.Provider value={editorView}>
         <SetEditorViewContext.Provider value={setEditorView}>
           <SetEditorSelectionContext.Provider value={setSelectionPosition}>
-            <Toolbar />
-            <ViewBar
-              mode={mode}
-              themePreference={themePreference}
-              onModeChange={handleModeChange}
-              onThemeChange={setThemePreference}
-              onNewDocument={() => requestFileAction({ type: "new" })}
-              onOpenDocument={() => requestFileAction({ type: "open" })}
-              onSaveDocument={() => void saveDocument()}
-              onSaveDocumentAs={() => void saveDocumentAs()}
-              fileBusy={fileBusy}
-              actionPending={pendingFileAction !== null}
-            />
             <div
-              className="workspace"
+              className={`workspace${sidebarVisible ? "" : " sidebar-collapsed"}`}
               data-testid="workspace"
               ref={workspaceRef}
               onDoubleClick={handleWorkspaceDoubleClick}
             >
-              <OutlinePanel
-                doc={doc}
-                onJump={jumpToHeading}
-                activePos={activeHeadingPos}
-                disabled={mode !== "wysiwyg"}
-              />
+              {sidebarVisible ? (
+                <>
+                  <OutlinePanel
+                    doc={doc}
+                    onJump={jumpToHeading}
+                    activePos={activeHeadingPos}
+                    disabled={mode !== "wysiwyg"}
+                    width={outlineWidth}
+                  />
+                  <div
+                    className="sidebar-resizer"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="调整侧栏宽度"
+                    data-testid="sidebar-resizer"
+                    onPointerDown={startOutlineResize}
+                  />
+                </>
+              ) : null}
               <section className="editor-pane" aria-label="编辑器">
                 {modeTransitionError ? (
                   <p
@@ -1104,6 +1497,61 @@ export default function App() {
                     </button>
                   </div>
                 ) : null}
+                {pendingLocalImages.length > 0 ? (
+                  <div
+                    className="file-changed-notice local-images-notice"
+                    role="status"
+                    data-testid="local-images-notice"
+                  >
+                    <span>
+                      此文档引用了 {pendingLocalImages.length} 张本地图片
+                      （位于文档目录外），可逐张或全部允许显示：
+                    </span>
+                    <ul className="local-images-list">
+                      {pendingLocalImages.map((src) => {
+                        const { name, directory } = splitLocalImagePath(src);
+                        return (
+                          <li key={src} data-testid="local-images-item">
+                            <span className="local-image-path" title={src}>
+                              <strong>{name}</strong>
+                              {directory ? ` — ${directory}` : ""}
+                            </span>
+                            <button
+                              type="button"
+                              className="mode-button"
+                              data-testid="local-images-allow-one"
+                              onClick={() => {
+                                void allowLocalImage(src);
+                              }}
+                            >
+                              允许
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <div className="local-images-actions">
+                      <button
+                        type="button"
+                        className="mode-button"
+                        data-testid="local-images-allow"
+                        onClick={() => {
+                          void allowLocalImages();
+                        }}
+                      >
+                        全部允许
+                      </button>
+                      <button
+                        type="button"
+                        className="mode-button"
+                        data-testid="local-images-block"
+                        onClick={() => setPendingLocalImages([])}
+                      >
+                        保持阻止
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 {showWelcome ? (
                   <WelcomeView
                     recentFiles={recentFiles}
@@ -1126,6 +1574,7 @@ export default function App() {
                     sessionKey={sessionKey}
                     onChange={handleDocumentChange}
                     onPasteImage={handlePasteImage}
+                    onDropImage={handleDropImage}
                   />
                 ) : mode === "source" ? (
                   <SourceEditor
@@ -1138,13 +1587,22 @@ export default function App() {
                 ) : (
                   <ReadView doc={doc} />
                 )}
+                {/* 底栏只占编辑列宽度：侧栏直达窗口底部（Typora 布局）。 */}
+                <StatusBar
+                  mode={mode}
+                  sidebarVisible={sidebarVisible}
+                  onToggleSidebar={() =>
+                    setSidebarVisible((visible) => !visible)
+                  }
+                  onToggleSourceMode={() =>
+                    handleModeChange(mode === "source" ? "wysiwyg" : "source")
+                  }
+                />
               </section>
             </div>
           </SetEditorSelectionContext.Provider>
         </SetEditorViewContext.Provider>
       </EditorViewContext.Provider>
-
-        <StatusBar fileName={fileName} dirty={dirty} mode={mode} />
         {imageViewer !== null && (
           <ImageViewer
             src={imageViewer.src}
@@ -1180,116 +1638,6 @@ export default function App() {
         />
       ) : null}
     </>
-  );
-}
-
-function ViewBar({
-  mode,
-  themePreference,
-  onModeChange,
-  onThemeChange,
-  onNewDocument,
-  onOpenDocument,
-  onSaveDocument,
-  onSaveDocumentAs,
-  fileBusy,
-  actionPending,
-}: {
-  mode: EditorMode;
-  themePreference: ThemePreference;
-  onModeChange(mode: EditorMode): void;
-  onThemeChange(theme: ThemePreference): void;
-  onNewDocument(): void;
-  onOpenDocument(): void;
-  onSaveDocument(): void;
-  onSaveDocumentAs(): void;
-  fileBusy: boolean;
-  actionPending: boolean;
-}) {
-  return (
-    <div className="view-bar" data-testid="view-bar">
-      <div className="view-actions">
-        <div
-          className="mode-switcher"
-          role="group"
-          aria-label="编辑模式"
-          data-testid="mode-switcher"
-        >
-          {modes.map((item) => (
-            <button
-              key={item}
-              type="button"
-              className="mode-button"
-              aria-pressed={mode === item}
-              data-active={mode === item ? "true" : "false"}
-              data-testid={`mode-${item}`}
-              onClick={() => onModeChange(item)}
-            >
-              {modeLabels[item]}
-            </button>
-          ))}
-        </div>
-        <div className="file-actions" role="group" aria-label="文件操作">
-          <button
-            type="button"
-            className="mode-button"
-            data-testid="file-new"
-            disabled={fileBusy || actionPending}
-            onClick={onNewDocument}
-          >
-            新建
-          </button>
-          <button
-            type="button"
-            className="mode-button"
-            data-testid="file-open"
-            disabled={fileBusy || actionPending}
-            onClick={() => void onOpenDocument()}
-          >
-            打开
-          </button>
-          <button
-            type="button"
-            className="mode-button"
-            data-testid="file-save"
-            disabled={fileBusy || actionPending}
-            onClick={() => void onSaveDocument()}
-          >
-            保存
-          </button>
-          <button
-            type="button"
-            className="mode-button"
-            data-testid="file-save-as"
-            disabled={fileBusy || actionPending}
-            onClick={() => void onSaveDocumentAs()}
-          >
-            另存为
-          </button>
-        </div>
-      </div>
-      <label className="theme-select-label" htmlFor="theme-select">
-        主题
-        <select
-          id="theme-select"
-          value={themePreference}
-          data-testid="theme-select"
-          onChange={(event) =>
-            onThemeChange(event.target.value as ThemePreference)
-          }
-        >
-          {(Object.keys(themeLabels) as ThemePreference[]).map((theme) => (
-            <option
-              key={theme}
-              value={theme}
-              data-testid={`theme-option-${theme}`}
-            >
-              {themeLabels[theme]}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
   );
 }
 

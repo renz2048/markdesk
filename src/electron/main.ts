@@ -41,8 +41,14 @@ protocol.registerSchemesAsPrivileged([
 const fileIpcController = createSecureFileIpcController({
   recentStoragePath: join(app.getPath("userData"), "recent-files.json"),
   draftStoragePath: app.getPath("userData"),
+  imageGrantsStoragePath: join(app.getPath("userData"), "image-grants.json"),
+  onThemePreferenceChanged: (theme) => {
+    currentThemePreference = theme;
+    refreshApplicationMenu();
+  },
 });
 let currentRecentFiles: RecentFileStatus[] = [];
+let currentThemePreference = "system" as "light" | "dark" | "system";
 
 function commandTarget(): BrowserWindow | null {
   return resolveFocusedMarkDeskWindow(BrowserWindow.getAllWindows());
@@ -84,6 +90,15 @@ app.on("second-instance", (_event, argv) => {
 function refreshApplicationMenu(): void {
   createApplicationMenu({
     onMenuCommand: (command) => {
+      // 窗口级命令在主进程直接处理，不进入渲染端命令循环。
+      if (command === "new-window") {
+        createMainWindow();
+        return;
+      }
+      if (command === "close-window") {
+        commandTarget()?.close();
+        return;
+      }
       const target = commandTarget();
       try {
         if (target) sendMenuCommand(target, command);
@@ -92,6 +107,7 @@ function refreshApplicationMenu(): void {
       }
     },
     recentFiles: currentRecentFiles,
+    theme: currentThemePreference,
     onOpenRecentFile: (path) => {
       const target = commandTarget();
       try {

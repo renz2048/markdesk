@@ -58,7 +58,20 @@ export function normalizeLinkHref(href: string): string {
   return parsed.href;
 }
 
+// 本地绝对路径形式的图片：Windows 盘符、UNC 与 POSIX 绝对路径
+// （需求 4.5：拖入文档目录外的本地图片）。反斜杠不参与 URL 解析，
+// 保留作者书写的形式；仅图片允许，链接仍走严格策略。
+const absoluteImagePathPattern = /^(?:[a-zA-Z]:[\\/]|\\\\|\/[^\\/])/u;
+
 export function normalizeImageSrc(src: string): string {
+  const trimmed = src.trim();
+  if (absoluteImagePathPattern.test(trimmed)) {
+    if (controlCharacterPattern.test(trimmed) || trimmed.length > 1024) {
+      throw new Error("Unsafe or malformed image URL");
+    }
+    return trimmed;
+  }
+
   const { value, scheme } = prepareUrl(src, "image");
 
   if (!scheme) {

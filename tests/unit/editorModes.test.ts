@@ -176,14 +176,16 @@ describe("editor modes", () => {
 
     const status = renderToStaticMarkup(
       createElement(StatusBar, {
-        fileName: "demo.md",
-        dirty: true,
         mode: "source",
+        sidebarVisible: true,
+        onToggleSidebar: () => undefined,
+        onToggleSourceMode: () => undefined,
       }),
     );
     expect(status).toContain('data-testid="status-bar"');
-    expect(status).toContain("demo.md");
-    expect(status).toContain("未保存");
-    expect(status).toContain("源码");
+    expect(status).toContain('data-testid="toggle-sidebar"');
+    expect(status).toContain("隐藏侧边栏");
+    expect(status).toContain('data-testid="toggle-source-mode"');
+    expect(status).toContain("退出源代码模式");
   });
 });

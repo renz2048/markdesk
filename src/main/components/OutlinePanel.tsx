@@ -6,16 +6,23 @@ export function OutlinePanel({
   onJump,
   activePos,
   disabled = false,
+  width = 250,
 }: {
   doc: Node;
   onJump(pos: number): void;
   activePos?: number;
   disabled?: boolean;
+  width?: number;
 }) {
   const items = outlineFromDoc(doc);
 
   return (
-    <aside className="outline-panel" aria-label="文档大纲" data-testid="outline">
+    <aside
+      className="outline-panel"
+      aria-label="文档大纲"
+      data-testid="outline"
+      style={{ width }}
+    >
       {items.length === 0 ? (
         <p className="muted" data-testid="outline-empty">
           暂无标题

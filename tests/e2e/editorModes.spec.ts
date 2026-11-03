@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "@playwright/test";
+import { clickMenuItem } from "./helpers/menu";
 
 type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
 type Page = Awaited<ReturnType<ElectronApplication["firstWindow"]>>;
@@ -54,7 +55,7 @@ test.afterAll(async () => {
 });
 
 test("source and read modes preserve identity, remount sessions, and render safely", async () => {
-  await page.getByTestId("mode-source").click();
+  await clickMenuItem(app, "模式", "源码模式");
   const sourceContent = page.getByTestId("source-editor-content");
   await sourceContent.click();
   await page.keyboard.type("# Identity\n");
@@ -69,13 +70,13 @@ test("source and read modes preserve identity, remount sessions, and render safe
   expect(identity).toBe(true);
   expect(await sourceContent.textContent()).toBe("# Identitycallback");
 
-  await page.getByTestId("mode-read").click();
+  await clickMenuItem(app, "模式", "阅读模式");
   const firstReadView = page.getByTestId("read-view");
   // 输入中的 "\n" 是回车：标题行到换行即止，"callback" 是下一段落。
   await expect(firstReadView.locator("h1")).toHaveText("Identity");
   await expect(firstReadView.locator("p").first()).toHaveText("callback");
 
-  await page.getByTestId("mode-source").click();
+  await clickMenuItem(app, "模式", "源码模式");
   const remountedContent = await sourceContent.elementHandle();
   const remounted = await page.evaluate(
     ([first, current]) => first !== current,
@@ -100,7 +101,7 @@ test("source and read modes preserve identity, remount sessions, and render safe
       "",
     ].join("\n"),
   );
-  await page.getByTestId("mode-read").click();
+  await clickMenuItem(app, "模式", "阅读模式");
   const readView = page.getByTestId("read-view");
   await expect(readView.locator("table th").first()).toHaveText("Name");
   await expect(
@@ -132,7 +133,7 @@ test("source and read modes preserve identity, remount sessions, and render safe
 
 test("system theme follows emulated color scheme and manual selections update tokens", async () => {
   const root = page.locator("html");
-  await page.getByTestId("theme-select").selectOption("system");
+  await clickMenuItem(app, "主题", "跟随系统");
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(root).toHaveAttribute("data-theme", "dark");
   await expect(root).toHaveAttribute("data-theme-preference", "system");
@@ -143,7 +144,7 @@ test("system theme follows emulated color scheme and manual selections update to
   await page.emulateMedia({ colorScheme: "light" });
   await expect(root).toHaveAttribute("data-theme", "light");
 
-  await page.getByTestId("theme-select").selectOption("dark");
+  await clickMenuItem(app, "主题", "深色");
   await expect(root).toHaveAttribute("data-theme", "dark");
   await expect(root).toHaveAttribute("data-theme-preference", "dark");
   expect(

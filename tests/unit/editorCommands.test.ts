@@ -144,9 +144,10 @@ describe("editor commands", () => {
       "Mod-Shift-8",
       "Mod-Shift-9",
     ]);
-    // history/undo keymap、formatting keymap、base keymap、
-    // drop cursor、gap cursor 共 6 个插件。
-    expect(createEditorPlugins()).toHaveLength(6);
+    // history/undo keymap、formatting keymap、pending syntax、
+    // list editing、base keymap、input rules、drop cursor、gap cursor
+    // 共 9 个插件。
+    expect(createEditorPlugins()).toHaveLength(9);
 
     const bold = applyCommand(
       formattingKeymap["Mod-b"],

@@ -7,6 +7,7 @@ import {
   test,
 } from "@playwright/test";
 import { markdeskChannels } from "../../src/shared/types";
+import { clickMenuItem } from "./helpers/menu";
 
 type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
 type Page = Awaited<ReturnType<ElectronApplication["firstWindow"]>>;
@@ -100,7 +101,7 @@ test("clean new and recent opens execute without confirmation", async () => {
   await expect(page.getByTestId("welcome-view")).toBeVisible();
   await expect(page.getByTestId("close-protection-dialog")).toHaveCount(0);
 
-  await page.getByTestId("file-new").click();
+  await clickMenuItem(app, "文件", "新建");
   await expect(page.getByTestId("welcome-view")).toBeVisible();
   await expect(page.getByTestId("close-protection-dialog")).toHaveCount(0);
 
@@ -110,23 +111,21 @@ test("clean new and recent opens execute without confirmation", async () => {
       filePaths: [selectedPath],
     });
   }, alphaPath);
-  await page.getByTestId("file-open").click();
-  await expect(page.getByTestId("document-name")).toHaveText(basename(alphaPath));
-  await expect(page.getByTestId("document-dirty-status")).toHaveText("已保存");
-  await page.getByTestId("file-new").click();
+  await clickMenuItem(app, "文件", "打开…");
+  await expect(page).toHaveTitle(`${basename(alphaPath)} - MarkDesk`);
+  await clickMenuItem(app, "文件", "新建");
   await expect(page.getByTestId("welcome-view")).toBeVisible();
 
   await openRecent(alphaPath);
-  await expect(page.getByTestId("document-name")).toHaveText(basename(alphaPath));
-  await expect(page.getByTestId("document-dirty-status")).toHaveText("已保存");
+  await expect(page).toHaveTitle(`${basename(alphaPath)} - MarkDesk`);
 });
 
 test("dirty replacement supports cancel, save, and discard", async () => {
-  await page.getByTestId("mode-source").click();
+  await clickMenuItem(app, "模式", "源码模式");
   await page.getByTestId("source-editor-content").fill("# Local edit\n");
-  await expect(page.getByTestId("document-dirty-status")).toHaveText("未保存");
+  await expect(page).toHaveTitle(`${basename(alphaPath)}● - MarkDesk`);
 
-  await page.getByTestId("file-new").click();
+  await clickMenuItem(app, "文件", "新建");
   await expect(page.getByTestId("close-protection-dialog")).toBeVisible();
   await expect(page.getByTestId("app-shell")).toHaveAttribute("aria-busy", "true");
   await expect(page.getByTestId("app-shell")).toHaveAttribute("inert", "");
@@ -140,15 +139,15 @@ test("dirty replacement supports cancel, save, and discard", async () => {
     "# Local edit",
   );
 
-  await page.getByTestId("file-new").click();
+  await clickMenuItem(app, "文件", "新建");
   await page.getByTestId("close-protection-save").click();
   await expect(page.getByTestId("welcome-view")).toBeVisible();
   await expect(await readFile(alphaPath, "utf8")).toBe("# Local edit\n");
 
   await openRecent(alphaPath);
-  await page.getByTestId("mode-source").click();
+  await clickMenuItem(app, "模式", "源码模式");
   await page.getByTestId("source-editor-content").fill("# Discarded edit\n");
-  await page.getByTestId("file-new").click();
+  await clickMenuItem(app, "文件", "新建");
   await page.getByTestId("close-protection-discard").click();
   await expect(page.getByTestId("welcome-view")).toBeVisible();
   await expect(await readFile(alphaPath, "utf8")).toBe("# Local edit\n");
@@ -158,7 +157,7 @@ test("an opening document stays inert and a concurrent edit blocks replacement",
   // 显式固定前置文件内容，避免依赖前序用例的磁盘写入时序。
   await writeFile(alphaPath, "# Local edit\n", "utf8");
   await openRecent(alphaPath);
-  await page.getByTestId("mode-wysiwyg").click();
+  await clickMenuItem(app, "模式", "所见即所得模式");
   // 上一个用例已把 alpha 保存为 “# Local edit”；解析为 h1 标题后
   // WYSIWYG 视图渲染标题文本本身。
   await expect(
@@ -225,9 +224,7 @@ test("an opening document stays inert and a concurrent edit blocks replacement",
     "data-error-code",
     "file-changed",
   );
-  await expect(page.getByTestId("document-name")).toHaveText(
-    basename(alphaPath),
-  );
+  await expect(page).toHaveTitle(`${basename(alphaPath)} - MarkDesk`);
   // 上一个用例已把 alpha 保存为 “# Local edit”；解析为 h1 标题后
   // WYSIWYG 视图渲染标题文本本身。
   await expect(
@@ -241,11 +238,11 @@ test("an opening document stays inert and a concurrent edit blocks replacement",
 test("intercepted window close honors cancel then save", async () => {
   // 前序用例结束时文档仍处于打开状态；先回到欢迎页再打开最近文件。
   if ((await page.getByTestId("welcome-view").count()) === 0) {
-    await page.getByTestId("file-new").click();
+    await clickMenuItem(app, "文件", "新建");
     await expect(page.getByTestId("welcome-view")).toBeVisible();
   }
   await openRecent(alphaPath);
-  await page.getByTestId("mode-source").click();
+  await clickMenuItem(app, "模式", "源码模式");
   await page.getByTestId("source-editor-content").fill("# Close me\n");
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.close());

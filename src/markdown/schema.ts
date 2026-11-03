@@ -5,7 +5,19 @@ import { Schema } from "prosemirror-model";
  * 加载（主进程确保不逃逸当前文档目录）；绝对 URL 与 data: URI 原样
  * 输出。导出 HTML 时由 exportHtml 反向剥离协议前缀。
  */
+// 本地绝对路径（Windows 盘符 / UNC / POSIX）：显示时编码进资源协议的
+// absolute/ 分支（需求 4.5，授权解析见主进程 resolveResourcePath）。
+const absolutePathPattern = /^(?:[a-zA-Z]:[\\/]|\\\\|\/[^\\/])/u;
+
+/** 图片 src 是否为本地绝对路径（Windows 盘符 / UNC / POSIX）。 */
+export function isLocalAbsolutePath(src: string): boolean {
+  return absolutePathPattern.test(src);
+}
+
 export function editorImageSrc(src: string): string {
+  if (isLocalAbsolutePath(src)) {
+    return `markdesk-resource:absolute/${encodeURIComponent(src)}`;
+  }
   if (
     src.length === 0 ||
     src.startsWith("/") ||
@@ -15,6 +27,21 @@ export function editorImageSrc(src: string): string {
     return src;
   }
   return `markdesk-resource:${src}`;
+}
+
+/** editorImageSrc 的逆变换：导出 HTML 时还原作者书写的路径。 */
+export function sourceImageSrc(src: string): string {
+  if (src.startsWith("markdesk-resource:absolute/")) {
+    try {
+      return decodeURIComponent(src.slice("markdesk-resource:absolute/".length));
+    } catch {
+      return src;
+    }
+  }
+  if (src.startsWith("markdesk-resource:")) {
+    return src.slice("markdesk-resource:".length);
+  }
+  return src;
 }
 
 export const markdownSchema = new Schema({

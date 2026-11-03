@@ -2,11 +2,15 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  nativeTheme,
   protocol,
 } from "electron";
+import { spawn } from "node:child_process";
 import { watch } from "node:fs";
-import { mkdir, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, join, posix, win32 } from "node:path";
+import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, posix, win32 } from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   fingerprint,
   FileServiceError,
@@ -32,6 +36,12 @@ import {
   upsertRecentFile,
 } from "./recent-files";
 import {
+  IMAGE_GRANTS_LIMIT,
+  isGrantableImagePath,
+  loadImageGrants,
+  saveImageGrants,
+} from "./image-grants";
+import {
   markdeskChannels,
   type FileFingerprint,
   type FileReadResult,
@@ -42,8 +52,10 @@ import {
   type RecentFileStatus,
   type RecoveryDraft,
   type SavedImageAsset,
+  type PickedImageAsset,
   type RecoveryDraftInput,
   type RecoveryDraftSummary,
+  type ThemePreferenceSetting,
 } from "../shared/types";
 
 interface WebContentsLike {
@@ -133,12 +145,20 @@ export interface SecureFileIpcDependencies {
   ) => FileWatcherLike;
   writeExport?: (path: string, html: string) => Promise<void>;
   writePastedImage?: (path: string, bytes: Uint8Array) => Promise<void>;
+  writeFileBinary?: (path: string, data: Uint8Array) => Promise<void>;
+  onThemePreferenceChanged?: (theme: ThemePreferenceSetting) => void;
+  /** 调用 Pandoc（单测注入桩）；参数为 pandoc 命令行。 */
+  runPandoc?: (args: string[]) => Promise<void>;
   ensureDirectory?: (path: string) => Promise<void>;
   protocolHandle?: (
     scheme: string,
     handler: (request: { url: string }) => Promise<Response>,
   ) => void;
   readResourceFile?: (path: string) => Promise<Buffer>;
+  /** 图片授权表存储文件（未配置时授权仅存内存，重启失效）。 */
+  imageGrantsStoragePath?: string;
+  loadImageGrants?: (storagePath: string) => Promise<string[]>;
+  saveImageGrants?: (storagePath: string, paths: string[]) => Promise<void>;
 }
 
 interface FileWatcherLike {
@@ -235,10 +255,14 @@ const resourceMediaTypes = new Map([
  * 解析 markdesk-resource: 请求。仅当存在当前打开的 Markdown 文档、
  * 请求是相对路径、规范化后不逃逸文档目录、且扩展名在图片白名单内时
  * 返回绝对路径；否则返回 null（拒绝）。
+ *
+ * absolute/<编码路径> 形式（文档目录外的本地绝对路径图片）只在路径
+ * 与扩展授权列表逐字匹配且扩展名为图片时放行。
  */
 export function resolveResourcePath(
   openDirectories: readonly string[],
   requestUrl: string,
+  grantedAbsolutePaths?: readonly string[],
 ): string | null {
   const match = /^markdesk-resource:(?!\/)/iu.exec(requestUrl);
   if (!match) return null;
@@ -248,6 +272,20 @@ export function resolveResourcePath(
   } catch {
     return null;
   }
+
+  if (relative.startsWith("absolute/")) {
+    // 整段已在上文解码一次，这里直接截取，避免二次解码破坏原文。
+    const absolute = relative.slice("absolute/".length);
+    if (
+      !grantedAbsolutePaths?.includes(absolute) ||
+      !resourceMediaTypes.has(posix.extname(absolute).toLowerCase()) &&
+        !resourceMediaTypes.has(win32.extname(absolute).toLowerCase())
+    ) {
+      return null;
+    }
+    return absolute;
+  }
+
   if (
     relative.length === 0 ||
     relative.length > 1024 ||
@@ -351,6 +389,87 @@ function windowsReservedName(value: string): boolean {
   return /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(value);
 }
 
+// 渲染端最近一次同步的主题偏好（仅用于菜单单选状态展示）。
+let currentThemePreference: ThemePreferenceSetting = "system";
+
+// 在隐藏窗口中渲染导出的 HTML，产出 PDF 字节或 PNG 截图。临时 HTML
+// 与文档同目录写入，保证相对图片路径（assets/...）可解析。
+async function renderExportToBuffer(
+  tempPath: string,
+  format: "pdf" | "png",
+): Promise<Uint8Array> {
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  try {
+    await win.loadFile(tempPath);
+    // 等待字体与图片完成首帧渲染。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (format === "pdf") {
+      return await win.webContents.printToPDF({
+        printBackground: true,
+        pageSize: "A4",
+      });
+    }
+    const size = (await win.webContents.executeJavaScript(
+      "({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight })",
+    )) as { width?: unknown; height?: unknown };
+    const width = Math.min(
+      Math.max(Number(size.width) || 860, 400),
+      4000,
+    );
+    const height = Math.min(
+      Math.max(Number(size.height) || 600, 400),
+      20000,
+    );
+    win.setContentSize(width, height);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const image = await win.webContents.capturePage();
+    return image.toPNG();
+  } finally {
+    win.destroy();
+  }
+}
+
+// Pandoc 导出目标：扩展名 + pandoc 写入格式（-t）。
+export const pandocExportFormats = {
+  docx: { ext: "docx", to: "docx" },
+  odt: { ext: "odt", to: "odt" },
+  epub: { ext: "epub", to: "epub" },
+  latex: { ext: "tex", to: "latex" },
+  mediawiki: { ext: "txt", to: "mediawiki" },
+} as const;
+
+export type PandocExportTarget = keyof typeof pandocExportFormats;
+
+// 调用系统 Pandoc。ENOENT（未安装）以 reject 的形式返回。
+function defaultRunPandoc(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pandoc", args, { windowsHide: true });
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else {
+        reject(
+          new FileServiceError(
+            "write-failed",
+            `Pandoc 转换失败：${stderr.trim().slice(0, 200)}`,
+          ),
+        );
+      }
+    });
+  });
+}
+
 function defaultSaveName(value: unknown): string {
   if (
     typeof value !== "string" ||
@@ -405,6 +524,23 @@ export function createSecureFileIpcController(
   const dialogs = dependencies.dialog ?? dialog;
   const getWindows = dependencies.getWindows ?? defaultWindows;
   const canonicalize = dependencies.canonicalize ?? defaultCanonicalize;
+  // Pandoc 转换（需求 4.6 的 Word/OpenOffice/Epub/LaTeX/MediaWiki 导出）。
+  // 可用性按控制器缓存；单测经 runPandoc 依赖注入桩掉。
+  const runPandoc = dependencies.runPandoc ?? defaultRunPandoc;
+  let pandocAvailable: boolean | null = null;
+  const ensurePandoc = async (): Promise<void> => {
+    if (pandocAvailable === null) {
+      pandocAvailable = await runPandoc(["--version"])
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!pandocAvailable) {
+      throw new FileServiceError(
+        "pandoc-missing",
+        "未检测到 Pandoc。请先安装 Pandoc（https://pandoc.org/installing.html）并确保其在 PATH 中，再使用该导出格式。",
+      );
+    }
+  };
   const read = dependencies.readFile ?? readMarkdownFile;
   const write = dependencies.writeFile ?? writeMarkdownFile;
   const recentStoragePath = dependencies.recentStoragePath;
@@ -436,6 +572,59 @@ export function createSecureFileIpcController(
     });
   const readResourceFile = dependencies.readResourceFile ??
     readResourceWithRetry;
+  // 文档目录外本地图片的显示授权（需求 4.5 拖入 + 打开文档时的用户
+  // 确认）。授权表启动时从磁盘恢复、变更时落盘，跨会话记忆。
+  const imageGrantsStorage = dependencies.imageGrantsStoragePath;
+  const loadImageGrantList = dependencies.loadImageGrants ?? loadImageGrants;
+  const saveImageGrantList = dependencies.saveImageGrants ?? saveImageGrants;
+  const grantedAbsoluteImages = new Set<string>();
+  const imageGrantsReady = (async () => {
+    if (!imageGrantsStorage) return;
+    for (const path of await loadImageGrantList(imageGrantsStorage)) {
+      grantedAbsoluteImages.add(path);
+    }
+  })();
+
+  function persistImageGrants(): void {
+    if (!imageGrantsStorage) return;
+    // 超出上限时淘汰最早授权的路径。
+    const paths = [...grantedAbsoluteImages].slice(-IMAGE_GRANTS_LIMIT);
+    void saveImageGrantList(imageGrantsStorage, paths).catch((error) => {
+      console.error("markdesk: 图片授权表写入失败", error);
+    });
+  }
+
+  /** 登记一条显示授权（拖入或用户确认），并异步持久化。 */
+  function grantAbsoluteImage(path: string): void {
+    if (grantedAbsoluteImages.has(path)) return;
+    grantedAbsoluteImages.add(path);
+    persistImageGrants();
+  }
+
+  /** 校验渲染端传来的图片路径列表（空、非绝对、非图片、重复均拒绝）。 */
+  function validateImageSrcList(value: unknown): string[] {
+    const invalid = () =>
+      new FileServiceError("invalid-argument", "图片路径列表无效。");
+    if (
+      !Array.isArray(value) ||
+      value.length === 0 ||
+      value.length > 200
+    ) {
+      throw invalid();
+    }
+    const seen = new Set<string>();
+    for (const entry of value) {
+      if (
+        typeof entry !== "string" ||
+        !isGrantableImagePath(entry) ||
+        seen.has(entry)
+      ) {
+        throw invalid();
+      }
+      seen.add(entry);
+    }
+    return [...seen];
+  }
   const grantsBySender = new Map<number, WindowFileGrants>();
   const closeRequests = new Map<number, CloseRequest>();
   const recentFilesListeners = new Set<RecentFilesListener>();
@@ -727,12 +916,19 @@ export function createSecureFileIpcController(
     registered = true;
 
     // 受限的本地图片协议：只在存在已打开的 Markdown 文档时解析相对
-    // 图片，且规范化后不得逃逸文档目录（详见 resolveResourcePath）。
+    // 图片，且规范化后不得逃逸文档目录（详见 resolveResourcePath）；
+    // 文档目录外的本地绝对路径图片仅在用户显式拖入并登记授权后可解析。
     handleProtocol("markdesk-resource", async (request) => {
+      // 等待持久化授权表恢复完成，避免启动初期的请求被误判为未授权。
+      await imageGrantsReady;
       const openDirectories = [...watchedFiles.keys()].map((canonical) =>
         dirname(canonical)
       );
-      const target = resolveResourcePath(openDirectories, request.url);
+      const target = resolveResourcePath(
+        openDirectories,
+        request.url,
+        [...grantedAbsoluteImages],
+      );
       if (!target) {
         return new Response("access denied", { status: 403 });
       }
@@ -1154,6 +1350,280 @@ export function createSecureFileIpcController(
           return { relativeSrc: `assets/${candidate}` };
         }),
     );
+
+    // 「格式 → 图像」：选择本地图片文件并读取字节。渲染端沿用粘贴
+    // 图片的资产流程（保存文档时落盘 assets/，未保存时内嵌 data URL）。
+    ipc.handle(
+      markdeskChannels.pickImageAsset,
+      async (event): Promise<IpcResult<PickedImageAsset | null>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const selection = await dialogs.showOpenDialog(grants.window, {
+            title: "插入图片",
+            properties: ["openFile"],
+            filters: [
+              {
+                name: "图片",
+                extensions: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp"],
+              },
+            ],
+          });
+          const picked = selection.filePaths?.[0];
+          if (selection.canceled || !picked) return null;
+          if (!isImagePath(picked)) {
+            throw new FileServiceError("invalid-path", "所选文件不是图片。");
+          }
+          const canonical = await canonicalize(picked);
+          grants.readPaths.add(canonical);
+          const bytes = await readFile(canonical);
+          return {
+            name: basename(canonical),
+            bytes: bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength,
+            ),
+          };
+        }),
+    );
+
+    // 「文件 → 导出 → PDF/图像」：渲染端导出 HTML 在隐藏窗口中渲染，
+    // 主进程打印为 PDF 或截取为 PNG。临时 HTML 写入文档目录以便相对
+    // 图片路径可解析（未保存文档的图片本就是 data URL，任意目录均可）。
+    ipc.handle(
+      markdeskChannels.exportRendered,
+      async (
+        event,
+        format: unknown,
+        html: unknown,
+        defaultName: unknown,
+        assetsDir: unknown,
+      ): Promise<IpcResult<string | null>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          if (format !== "pdf" && format !== "png") {
+            throw new FileServiceError("invalid-argument", "导出格式无效。");
+          }
+          if (typeof html !== "string" || html.length === 0) {
+            throw new FileServiceError("invalid-argument", "导出内容无效。");
+          }
+
+          const extension = format === "pdf" ? "pdf" : "png";
+          const safeDefaultName = defaultSaveName(defaultName);
+          const selection = await dialogs.showSaveDialog(grants.window, {
+            title: format === "pdf" ? "导出 PDF" : "导出图像",
+            defaultPath: safeDefaultName.replace(/\.(html?|md|markdown)$/iu, "") +
+              `.${extension}`,
+            filters: [
+              format === "pdf"
+                ? { name: "PDF", extensions: ["pdf"] }
+                : { name: "PNG 图像", extensions: ["png"] },
+            ],
+          });
+          const target = selection.filePath;
+          if (selection.canceled || !target) return null;
+          if (!target.toLowerCase().endsWith(`.${extension}`)) {
+            throw new FileServiceError("invalid-path", "导出路径扩展名无效。");
+          }
+
+          // 临时 HTML 的落点优先为文档目录（相对图片可解析），且必须
+          // 是该窗口已获授权的路径；否则退回系统临时目录。
+          let tempDirectory: string | null = null;
+          if (typeof assetsDir === "string" && assetsDir.length > 0) {
+            const canonicalDir = await canonicalize(assetsDir);
+            if (
+              grants.readPaths.has(canonicalDir) ||
+              grants.writePaths.has(canonicalDir)
+            ) {
+              tempDirectory = canonicalDir;
+            }
+          }
+
+          const tempPath = join(
+            tempDirectory ?? tmpdir(),
+            `.markdesk-export-${randomUUID()}.html`,
+          );
+          const writeFileBinary = dependencies.writeFileBinary ??
+            (async (path: string, data: Uint8Array) => {
+              await writeFile(path, data);
+            });
+          await writeFileBinary(tempPath, new TextEncoder().encode(html));
+
+          const rendered = await renderExportToBuffer(tempPath, format);
+          try {
+            await writeFileBinary(target, rendered);
+          } finally {
+            await rm(tempPath, { force: true }).catch(() => undefined);
+          }
+          return target;
+        }),
+    );
+
+    // 主题选择在渲染端生效；主进程据此重建菜单的单选勾选状态，并让
+    // 原生标题栏/菜单栏/系统对话框跟随主题明暗（需求 4.4）。
+    ipc.handle(
+      markdeskChannels.setThemePreference,
+      async (event, theme: unknown): Promise<IpcResult<void>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          if (theme !== "light" && theme !== "dark" && theme !== "system") {
+            throw new FileServiceError("invalid-argument", "主题设置无效。");
+          }
+          currentThemePreference = theme;
+          // 单测（依赖注入、无真实 Electron）里 nativeTheme 为空，跳过。
+          if (nativeTheme) nativeTheme.themeSource = theme;
+          dependencies.onThemePreferenceChanged?.(theme);
+        }),
+    );
+
+    // 拖入本地图片（需求 4.5）：文档目录内（含子目录）返回相对路径；
+    // 目录外返回绝对路径并登记协议显示授权。字节不走本通道，显示由
+    // markdesk-resource 的 absolute/ 分支按授权解析。
+    ipc.handle(
+      markdeskChannels.insertDroppedImage,
+      async (
+        event,
+        docPath: unknown,
+        imagePath: unknown,
+      ): Promise<IpcResult<{ src: string }>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const canonicalDoc = await canonicalMarkdownPath(docPath);
+          if (
+            !grants.readPaths.has(canonicalDoc) &&
+            !grants.writePaths.has(canonicalDoc)
+          ) {
+            throw new FileServiceError(
+              "invalid-path",
+              "当前文档未在本窗口打开，无法插入拖入的图片。",
+            );
+          }
+          if (!isImagePath(imagePath)) {
+            throw new FileServiceError("invalid-path", "拖入的文件不是图片。");
+          }
+          const canonicalImage = await canonicalize(imagePath);
+          if (!(await fileExists(canonicalImage))) {
+            throw new FileServiceError("invalid-path", "图片文件不存在。");
+          }
+          const docDir = dirname(canonicalDoc);
+          const pathMod = /^([a-zA-Z]:[\\/]|\\\\|\/\/)/u.test(docDir)
+            ? win32
+            : posix;
+          const resolved = pathMod.resolve(canonicalImage);
+          if (resolved.startsWith(`${docDir}${pathMod.sep}`)) {
+            const relative = pathMod
+              .relative(docDir, resolved)
+              .split(pathMod.sep)
+              .join("/");
+            return { src: relative };
+          }
+          grantAbsoluteImage(resolved);
+          return { src: resolved };
+        }),
+    );
+
+    // 打开文档时的本地图片授权：渲染端解析到目录外的绝对路径图片后
+    // 先查询未授权项并询问用户，用户同意后经 grantImagePaths 授权。
+    ipc.handle(
+      markdeskChannels.checkImageGrants,
+      async (event, srcs: unknown): Promise<IpcResult<string[]>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          await imageGrantsReady;
+          const requested = validateImageSrcList(srcs);
+          return requested.filter((src) => !grantedAbsoluteImages.has(src));
+        }),
+    );
+
+    ipc.handle(
+      markdeskChannels.grantImagePaths,
+      async (event, srcs: unknown): Promise<IpcResult<string[]>> =>
+        guarded(async () => {
+          grantsForSender(event.sender);
+          await imageGrantsReady;
+          const requested = validateImageSrcList(srcs);
+          for (const src of requested) {
+            grantAbsoluteImage(src);
+          }
+          return [...grantedAbsoluteImages];
+        }),
+    );
+
+    // Pandoc 导出（需求 4.6）：markdown 文本经系统 Pandoc 转为目标
+    // 格式。临时 md 与文档同目录以便相对图片可被 Pandoc 解析。
+    ipc.handle(
+      markdeskChannels.exportPandoc,
+      async (
+        event,
+        target: unknown,
+        markdown: unknown,
+        defaultName: unknown,
+        docDir: unknown,
+      ): Promise<IpcResult<string | null>> =>
+        guarded(async () => {
+          const grants = grantsForSender(event.sender);
+          const format =
+            typeof target === "string" &&
+              target in pandocExportFormats
+              ? pandocExportFormats[target as PandocExportTarget]
+              : null;
+          if (!format) {
+            throw new FileServiceError("invalid-argument", "导出格式无效。");
+          }
+          if (typeof markdown !== "string" || markdown.length === 0) {
+            throw new FileServiceError("invalid-argument", "导出内容无效。");
+          }
+
+          const safeDefaultName = defaultSaveName(defaultName)
+            .replace(/\.(md|markdown|html?)$/iu, "");
+          const selection = await dialogs.showSaveDialog(grants.window, {
+            title: "导出文档",
+            defaultPath: `${safeDefaultName}.${format.ext}`,
+            filters: [
+              { name: format.ext.toUpperCase(), extensions: [format.ext] },
+            ],
+          });
+          const targetPath = selection.filePath;
+          if (selection.canceled || !targetPath) return null;
+          if (!targetPath.toLowerCase().endsWith(`.${format.ext}`)) {
+            throw new FileServiceError("invalid-path", "导出路径扩展名无效。");
+          }
+
+          await ensurePandoc();
+
+          let tempDirectory: string | null = null;
+          if (typeof docDir === "string" && docDir.length > 0) {
+            const canonicalDir = await canonicalize(docDir);
+            if (
+              grants.readPaths.has(canonicalDir) ||
+              grants.writePaths.has(canonicalDir)
+            ) {
+              tempDirectory = canonicalDir;
+            }
+          }
+          const tempPath = join(
+            tempDirectory ?? tmpdir(),
+            `.markdesk-pandoc-${randomUUID()}.md`,
+          );
+          await (dependencies.writeExport ?? writeExportFile)(
+            tempPath,
+            markdown,
+          );
+          try {
+            await runPandoc([
+              tempPath,
+              "-o",
+              targetPath,
+              "-t",
+              format.to,
+              "--resource-path",
+              tempDirectory ?? dirname(targetPath),
+            ]);
+          } finally {
+            await rm(tempPath, { force: true }).catch(() => undefined);
+          }
+          return targetPath;
+        }),
+    );
   }
 
   async function notifyFileChanged(path: string): Promise<void> {
@@ -1252,6 +1722,22 @@ const menuCommands = new Set<MenuCommand>([
   "toggle-source",
   "toggle-read",
   "toggle-wysiwyg",
+  "format-bold",
+  "format-italic",
+  "format-strikethrough",
+  "format-code",
+  "paragraph-paragraph",
+  "paragraph-heading-1",
+  "paragraph-heading-2",
+  "paragraph-heading-3",
+  "paragraph-heading-4",
+  "paragraph-heading-5",
+  "paragraph-heading-6",
+  "paragraph-quote",
+  "paragraph-code-block",
+  "paragraph-bullet-list",
+  "paragraph-ordered-list",
+  "paragraph-horizontal-rule",
 ]);
 
 export function isMenuCommand(value: unknown): value is MenuCommand {
