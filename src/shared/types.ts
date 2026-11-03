@@ -245,6 +245,13 @@ export interface MarkDeskRendererApi {
   onCloseRequested(listener: () => void): () => void;
   requestClose(): Promise<void>;
   cancelClose(): Promise<void>;
+  /** Tauri 专用：同步原生窗口标题（Electron 由主进程自动跟随 document.title）。 */
+  setWindowTitle?(title: string): Promise<void>;
+  /** Tauri 专用：原生文件拖放（WebView 拿不到 File 对象，只有路径+坐标）。 */
+  onNativeDropPaths?(listener: (payload: {
+    paths: string[];
+    position: { x: number; y: number };
+  }) => void): () => void;
 }
 
 declare global {

@@ -13,13 +13,17 @@ export function secureWebPreferences(): Electron.WebPreferences {
 }
 
 export function contentSecurityPolicy(): string {
+  // ipc:/http://ipc.localhost（Tauri IPC）与
+  // http://markdesk-resource.localhost（Tauri 自定义协议的 http 形式）
+  // 一并列入白名单：Electron 下这些来源不存在，无副作用；两套构建
+  // 共享同一份 index.html meta（见 tests/unit/security.test.ts 的同步断言）。
   return [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' markdesk-resource: https: http: data:",
+    "img-src 'self' markdesk-resource: http://markdesk-resource.localhost https: http: data:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    "connect-src 'self' ipc: http://ipc.localhost http://markdesk-resource.localhost",
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",

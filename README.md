@@ -109,6 +109,21 @@ npm run e2e          # 构建 + Playwright Electron 端到端测试（tests/e2e�
 npm run build        # preload 打包（esbuild）+ 主进程 tsc + 渲染端 Vite 构建
 ```
 
+## 双框架构建（Electron 与 Tauri）
+
+渲染端（React + ProseMirror + CodeMirror）与 Markdown 管线为两套外壳共享；
+平台差异收敛在 `src/main/platform/`（Electron 走 preload 的 `window.markdesk`，
+Tauri 走 `invoke` 适配层）：
+
+```bash
+npm run dist -- --win       # Electron 版 NSIS 安装包（release/）
+npm run tauri:build         # Tauri 版 NSIS 安装包（src-tauri/target/release/bundle/nsis/）
+npm run tauri:dev           # Tauri 版开发模式
+cargo test --manifest-path src-tauri/Cargo.toml   # Rust 侧单元测试
+```
+
+Tauri 版需要 Rust（MSVC）工具链与 VS C++ Build Tools；产物体积约 10 MB 级。
+
 e2e 在受限环境（如 WSLg）下建议单 worker 串行执行（`playwright.config.ts` 已配置），
 并以每条测试的结果为准。
 

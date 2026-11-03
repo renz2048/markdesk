@@ -9,6 +9,16 @@ import { Schema } from "prosemirror-model";
 // absolute/ 分支（需求 4.5，授权解析见主进程 resolveResourcePath）。
 const absolutePathPattern = /^(?:[a-zA-Z]:[\\/]|\\\\|\/[^\\/])/u;
 
+// Tauri（WebView2）上自定义协议以 http://<scheme>.localhost/ 形式寻址，
+// Electron 上是原生 scheme；两种形式共用同一套前缀常量。
+const TAURI_RESOURCE_PREFIX = "http://markdesk-resource.localhost/";
+const ELECTRON_RESOURCE_PREFIX = "markdesk-resource:";
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+export const resourceProtocolPrefix = isTauri
+  ? TAURI_RESOURCE_PREFIX
+  : ELECTRON_RESOURCE_PREFIX;
+
 /** 图片 src 是否为本地绝对路径（Windows 盘符 / UNC / POSIX）。 */
 export function isLocalAbsolutePath(src: string): boolean {
   return absolutePathPattern.test(src);
@@ -16,30 +26,32 @@ export function isLocalAbsolutePath(src: string): boolean {
 
 export function editorImageSrc(src: string): string {
   if (isLocalAbsolutePath(src)) {
-    return `markdesk-resource:absolute/${encodeURIComponent(src)}`;
+    return `${resourceProtocolPrefix}absolute/${encodeURIComponent(src)}`;
   }
   if (
     src.length === 0 ||
     src.startsWith("/") ||
-    src.startsWith("markdesk-resource:") ||
+    src.startsWith(TAURI_RESOURCE_PREFIX) ||
+    src.startsWith(ELECTRON_RESOURCE_PREFIX) ||
     /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(src)
   ) {
     return src;
   }
-  return `markdesk-resource:${src}`;
+  return `${resourceProtocolPrefix}${src}`;
 }
 
 /** editorImageSrc 的逆变换：导出 HTML 时还原作者书写的路径。 */
 export function sourceImageSrc(src: string): string {
-  if (src.startsWith("markdesk-resource:absolute/")) {
+  const absolutePrefix = `${resourceProtocolPrefix}absolute/`;
+  if (src.startsWith(absolutePrefix)) {
     try {
-      return decodeURIComponent(src.slice("markdesk-resource:absolute/".length));
+      return decodeURIComponent(src.slice(absolutePrefix.length));
     } catch {
       return src;
     }
   }
-  if (src.startsWith("markdesk-resource:")) {
-    return src.slice("markdesk-resource:".length);
+  if (src.startsWith(resourceProtocolPrefix)) {
+    return src.slice(resourceProtocolPrefix.length);
   }
   return src;
 }

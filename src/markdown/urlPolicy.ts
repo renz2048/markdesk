@@ -98,6 +98,15 @@ export function normalizeImageSrc(src: string): string {
     return value;
   }
 
+  // Tauri（WebView2）上自定义协议的 http 形式，规则与上面一致。
+  if (/^http:\/\/markdesk-resource\.localhost\//iu.test(value)) {
+    if (value.includes("/../") || value.endsWith("/..")) {
+      throw new Error("Unsafe or malformed image URL");
+    }
+    parseAbsoluteUrl(value, "image");
+    return value;
+  }
+
   if (!["http", "https"].includes(scheme)) {
     throw new Error("Unsafe or malformed image URL");
   }

@@ -1,0 +1,31 @@
+[package]
+name = "markdesk"
+version = "0.3.0"
+description = "MarkDesk - 安全的单文件 Markdown 阅读器与编辑器"
+edition = "2021"
+
+[lib]
+name = "markdesk_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+rand = "0.8"
+notify = "8"
+percent-encoding = "2"
+tokio = { version = "1", features = ["time", "process"] }
+webview2-com = "0.39"
+windows-core = "0.62"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

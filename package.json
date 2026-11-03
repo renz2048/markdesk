@@ -15,12 +15,16 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "npm run build && playwright test",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "vite:dev": "vite",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "6.3.1",
     "@codemirror/language-data": "6.0.0",
     "@codemirror/state": "6.7.6",
+    "@tauri-apps/api": "^2.12.4",
     "codemirror": "6.0.1",
     "dompurify": "3.2.3",
     "markdown-it": "14.1.0",
@@ -43,6 +47,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.49.1",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/markdown-it": "14.1.2",
     "@types/node": "22.10.2",
     "@types/react": "18.3.12",
@@ -50,13 +55,13 @@
     "@vitejs/plugin-react": "4.3.4",
     "concurrently": "9.1.0",
     "cross-env": "7.0.3",
+    "electron": "33.2.0",
+    "electron-builder": "25.1.8",
     "jsdom": "^26.0.0",
     "typescript": "5.7.2",
     "vite": "5.4.11",
     "vitest": "2.1.8",
-    "wait-on": "8.0.1",
-    "electron": "33.2.0",
-    "electron-builder": "25.1.8"
+    "wait-on": "8.0.1"
   },
   "allowScripts": {
     "electron@33.2.0": true,

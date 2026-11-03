@@ -5,3 +5,5 @@ release/
 test-results/
 playwright-report/
 *.markdesk-tmp
+src-tauri/target/
+src-tauri/gen/schemas/

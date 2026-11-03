@@ -29,7 +29,12 @@ import {
 } from "./editor/commands";
 import { parseMarkdown } from "../markdown/parser";
 import { serializeMarkdown } from "../markdown/serializer";
-import { editorImageSrc, isLocalAbsolutePath } from "../markdown/schema";
+import {
+  editorImageSrc,
+  isLocalAbsolutePath,
+  resourceProtocolPrefix,
+} from "../markdown/schema";
+import { resolvePlatformApi } from "./platform/api";
 import { ImageViewer, imageViewerTarget } from "./components/ImageViewer";
 import {
   EditorViewContext,
@@ -283,7 +288,7 @@ export default function App() {
     ratio: number;
     targetMode: EditorMode;
   } | null>(null);
-  const api = typeof window === "undefined" ? undefined : window.markdesk;
+  const api = resolvePlatformApi();
   const [editorView, setEditorView] = useState<EditorView | null>(null);
   const [selectionPosition, setSelectionPosition] = useState(0);
   const [sourceCursorPosition, setSourceCursorPosition] = useState(0);
@@ -433,11 +438,12 @@ export default function App() {
       if (!shell) return;
       const wanted =
         onlySrc === undefined ? null : editorImageSrc(onlySrc);
-      for (const img of shell.querySelectorAll<HTMLImageElement>(
-        'img[src^="markdesk-resource:absolute/"]',
-      )) {
-        if (wanted === null || img.getAttribute("src") === wanted) {
-          img.setAttribute("src", img.getAttribute("src") ?? "");
+      const absolutePrefix = `${resourceProtocolPrefix}absolute/`;
+      for (const img of shell.querySelectorAll<HTMLImageElement>("img")) {
+        const src = img.getAttribute("src") ?? "";
+        if (!src.startsWith(absolutePrefix)) continue;
+        if (wanted === null || src === wanted) {
+          img.setAttribute("src", src);
         }
       }
     });
@@ -892,6 +898,53 @@ export default function App() {
     },
     [api, handlePasteImage],
   );
+
+  // Tauri：WebView 拿不到拖放文件的 File 对象，由原生拖放事件
+  //（路径 + 坐标）驱动，行为与 createDropImagePlugin 对齐：
+  // 落点换算光标位置插入，路径经主进程判定相对/绝对。
+  const insertDroppedImagesAt = useCallback(
+    async (
+      paths: string[],
+      position: { x: number; y: number },
+    ): Promise<void> => {
+      const docPath = useDocumentStore.getState().filePath;
+      if (!api || !docPath || !editorView || mode !== "wysiwyg") return;
+      const images = paths.filter(hasLocalImageExtension);
+      if (images.length === 0) return;
+      let anchor: number;
+      try {
+        const hit = editorView.posAtCoords({
+          left: position.x,
+          top: position.y,
+        });
+        anchor = hit ? hit.pos : editorView.state.selection.from;
+      } catch {
+        anchor = editorView.state.selection.from;
+      }
+      for (const imagePath of images) {
+        try {
+          const { src } = await api.insertDroppedImage(docPath, imagePath);
+          const node = editorView.state.schema.nodes.image.create({
+            src,
+            alt: fileNameFromPath(imagePath).replace(/\.[^.]+$/u, ""),
+          });
+          editorView.dispatch(editorView.state.tr.insert(anchor, node));
+          anchor += node.nodeSize;
+        } catch (error) {
+          setFileActionError(toFileActionError(error));
+        }
+      }
+      editorView.focus();
+    },
+    [api, editorView, mode],
+  );
+
+  useEffect(() => {
+    if (!api?.onNativeDropPaths) return undefined;
+    return api.onNativeDropPaths(({ paths, position }) => {
+      void insertDroppedImagesAt(paths, position);
+    });
+  }, [api, insertDroppedImagesAt]);
 
   // 「格式 → 图像」：选择图片文件后复用粘贴图片的资产流程
   // （保存文档 → assets/ 相对路径；未保存 → data URL 内嵌）。
@@ -1367,16 +1420,16 @@ export default function App() {
   // 欢迎页仅显示应用名；打开的文档为 `文件名 - MarkDesk`，有未保存
   // 修改时在文件名后加一个醒目的圆点；未保存的新建文档显示 `未命名`。
   // 原生标题栏无法加粗局部文字，用最重的圆点字形（●）保证清晰可见。
+  // Tauri 需显式同步原生窗口标题（setWindowTitle）。
   useEffect(() => {
-    if (showWelcome) {
-      document.title = "MarkDesk";
-      return;
-    }
-    const dot = dirty ? "●" : "";
-    document.title = filePath === null
-      ? `未命名${dot} - MarkDesk`
-      : `${fileName}${dot} - MarkDesk`;
-  }, [dirty, fileName, filePath, showWelcome]);
+    const title = showWelcome
+      ? "MarkDesk"
+      : filePath === null
+        ? `未命名${dirty ? "●" : ""} - MarkDesk`
+        : `${fileName}${dirty ? "●" : ""} - MarkDesk`;
+    document.title = title;
+    void api?.setWindowTitle?.(title);
+  }, [api, dirty, fileName, filePath, showWelcome]);
 
   const modalNoticeVisible =
     fileCollision !== null || recoveryDraft !== null;
