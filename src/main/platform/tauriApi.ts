@@ -96,8 +96,15 @@ export function createTauriApi(): MarkDeskRendererApi {
         defaultName,
         docDir,
       }),
-    insertDroppedImage: (docPath, imagePath) =>
-      call<{ src: string }>("insert_dropped_image", { docPath, imagePath }),
+    insertDroppedImage: async (docPath, imagePath) => {
+      // Rust 命令返回纯字符串（相对或绝对路径），包装回 { src } 契约；
+      // 此前直接解构会把 undefined 传给 ProseMirror 的必需属性 src。
+      const src = await call<string>("insert_dropped_image", {
+        docPath,
+        imagePath,
+      });
+      return { src };
+    },
     checkImageGrants: (srcs: string[]) =>
       call<string[]>("check_image_grants", { srcs }),
     grantImagePaths: (srcs: string[]) =>

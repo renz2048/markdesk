@@ -217,7 +217,19 @@ try {
   check(`PNG 导出失败：${error}`, false);
 }
 
-// 7. 导出临时文件写在文档目录，不得触发“文件已在其他程序中修改”。
+// 8. 拖入图片命令（目录外 → 绝对路径 + 授权登记）：Rust 返回纯字符串，
+//    适配器包装回 { src }；解构错位曾致 “No value supplied for
+//    attribute src”。
+const dropResult = await invoke("insert_dropped_image", {
+  docPath: markdownPath,
+  imagePath: pngPath,
+});
+check(
+  `拖入图片命令返回路径（${dropResult.ok ? String(dropResult.value) : dropResult.error}）`,
+  dropResult.ok && typeof dropResult.value === "string" && dropResult.value.endsWith(".png"),
+);
+
+// 9. 导出临时文件写在文档目录，不得触发“文件已在其他程序中修改”。
 await page.waitForTimeout(2000);
 const changedNotice = await page
   .getByTestId("file-changed-notice")
