@@ -64,7 +64,7 @@ fn serve_export_doc(
     }
     let token = segments[1];
     let rest = segments[2..].join("/");
-    let html_path = commands::take_export_doc(handle, token)?;
+    let html_path = commands::peek_export_doc(handle, token)?;
     let dir = html_path.parent()?.to_path_buf();
     if rest == "index.html" {
         let bytes = std::fs::read(&html_path).ok()?;
@@ -213,6 +213,7 @@ pub fn run() {
             commands::request_close,
             commands::cancel_close,
             commands::take_argv_open_path,
+            commands::export_rendered_to,
         ])
         .run(tauri::generate_context!())
         .expect("MarkDesk 启动失败");

@@ -5,7 +5,6 @@
 use crate::service::ServiceError;
 use rand::RngCore;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
@@ -34,104 +33,89 @@ fn resource_base() -> String {
 mod webview2 {
     use std::sync::mpsc;
     use std::time::Duration;
-    use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2, ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,
-        ICoreWebView2CallDevToolsProtocolMethodCompletedHandler_Impl,
-        ICoreWebView2ExecuteScriptCompletedHandler,
-        ICoreWebView2ExecuteScriptCompletedHandler_Impl,
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
+    use webview2_com::{
+        CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler,
     };
-    use windows_core::{implement, HRESULT, HSTRING, PCWSTR};
+    use windows_core::HSTRING;
 
-    #[implement(ICoreWebView2ExecuteScriptCompletedHandler)]
-    pub struct ScriptHandler {
-        sender: mpsc::Sender<Result<String, String>>,
+    /// 在主线程上对 ICoreWebView2 发起操作。闭包绝不能阻塞：COM 完成
+    /// 回调依赖主线程消息泵，在主线程里等待回调 = 死锁（这正是此前
+    /// “导出页面加载超时”的根因）。
+    pub fn kick_core(
+        window: &tauri::WebviewWindow,
+        run: impl FnOnce(&ICoreWebView2) + Send + 'static,
+    ) -> Result<(), String> {
+        window
+            .with_webview(move |webview| {
+                let controller = unsafe { webview.controller() };
+                if let Ok(core) = unsafe { controller.CoreWebView2() } {
+                    run(&core);
+                }
+            })
+            .map_err(|error| error.to_string())
     }
 
-    impl ICoreWebView2ExecuteScriptCompletedHandler_Impl for ScriptHandler_Impl {
-        fn Invoke(&self, errorcode: HRESULT, result: &PCWSTR) -> windows_core::Result<()> {
-            let message = if errorcode.is_ok() {
-                unsafe { Ok(result.to_string()?.to_string()) }
-            } else {
-                Err(format!("script failed: 0x{:x}", errorcode.0))
-            };
-            let _ = self.sender.send(message);
-            Ok(())
-        }
-    }
-
-    #[implement(ICoreWebView2CallDevToolsProtocolMethodCompletedHandler)]
-    pub struct CdpHandler {
-        sender: mpsc::Sender<Result<String, String>>,
-    }
-
-    impl ICoreWebView2CallDevToolsProtocolMethodCompletedHandler_Impl for CdpHandler_Impl {
-        fn Invoke(&self, errorcode: HRESULT, returnjson: &PCWSTR) -> windows_core::Result<()> {
-            let message = if errorcode.is_ok() {
-                unsafe { Ok(returnjson.to_string()?.to_string()) }
-            } else {
-                Err(format!("cdp failed: 0x{:x}", errorcode.0))
-            };
-            let _ = self.sender.send(message);
-            Ok(())
-        }
-    }
-
-    pub fn execute_script(core: &ICoreWebView2, script: &str) -> Result<String, String> {
+    pub fn execute_script(
+        window: &tauri::WebviewWindow,
+        script: &str,
+    ) -> Result<String, String> {
         let (sender, receiver) = mpsc::channel();
-        let handler: ICoreWebView2ExecuteScriptCompletedHandler =
-            ScriptHandler { sender }.into();
-        unsafe {
-            core.ExecuteScript(&HSTRING::from(script), &handler)
-                .map_err(|error| error.to_string())?;
-        }
+        let script = script.to_string();
+        kick_core(window, move |core| {
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(
+                move |error: windows_core::Result<()>, result: String| {
+                    let message = if error.is_ok() {
+                        Ok(result)
+                    } else {
+                        Err(format!("script failed: {error:?}"))
+                    };
+                    let _ = sender.send(message);
+                    Ok(())
+                },
+            ));
+            let _ = unsafe { core.ExecuteScript(&HSTRING::from(script.as_str()), &handler) };
+        })?;
         receiver
             .recv_timeout(Duration::from_secs(20))
             .map_err(|_| "script timeout".to_string())?
     }
 
     pub fn call_devtools(
-        core: &ICoreWebView2,
+        window: &tauri::WebviewWindow,
         method: &str,
         parameters: &str,
     ) -> Result<String, String> {
         let (sender, receiver) = mpsc::channel();
-        let handler: ICoreWebView2CallDevToolsProtocolMethodCompletedHandler =
-            CdpHandler { sender }.into();
-        unsafe {
-            core.CallDevToolsProtocolMethod(
-                &HSTRING::from(method),
-                &HSTRING::from(parameters),
-                &handler,
-            )
-            .map_err(|error| error.to_string())?;
-        }
+        let method = method.to_string();
+        let parameters = parameters.to_string();
+        kick_core(window, move |core| {
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                move |error: windows_core::Result<()>, json: String| {
+                    let message = if error.is_ok() {
+                        Ok(json)
+                    } else {
+                        Err(format!("cdp failed: {error:?}"))
+                    };
+                    let _ = sender.send(message);
+                    Ok(())
+                },
+            ));
+            let _ = unsafe {
+                core.CallDevToolsProtocolMethod(
+                    &HSTRING::from(method.as_str()),
+                    &HSTRING::from(parameters.as_str()),
+                    &handler,
+                )
+            };
+        })?;
         receiver
-            .recv_timeout(Duration::from_secs(90))
+            .recv_timeout(Duration::from_secs(120))
             .map_err(|_| "cdp timeout".to_string())?
     }
 }
 
 /// 取窗口的 ICoreWebView2 并执行回调（在主线程上）。
-#[cfg(windows)]
-fn with_core<R: Send + 'static>(
-    window: &tauri::WebviewWindow,
-    run: impl FnOnce(&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2) -> R + Send + 'static,
-) -> Result<R, String> {
-    let (sender, receiver) = mpsc::channel::<R>();
-    let sender = std::sync::Mutex::new(sender);
-    window
-        .with_webview(move |webview| {
-            let controller = unsafe { webview.controller() };
-            if let Ok(core) = unsafe { controller.CoreWebView2() } {
-                let _ = sender.lock().unwrap().send(run(&core));
-            }
-        })
-        .map_err(|error| error.to_string())?;
-    receiver
-        .recv_timeout(Duration::from_secs(100))
-        .map_err(|_| "导出渲染超时".to_string())
-}
-
 pub async fn render(
     handle: &AppHandle,
     format: &str,
@@ -148,9 +132,10 @@ pub async fn render(
         return Ok(None);
     };
 
-    // 临时 HTML 与文档同目录，协议按目录解析相对图片。
+    // 临时 HTML 与文档同目录（assets_dir 即文档目录），协议据此解析
+    // 相对图片；曾误取 parent() 导致写入上一级目录、图片全部失配。
     let base_dir = assets_dir
-        .and_then(|value| Path::new(value).parent().map(|parent| parent.to_path_buf()))
+        .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let token = format!("{:016x}", rand::thread_rng().next_u64());
     let html_path = base_dir.join(format!(".markdesk-export-{token}.html"));
@@ -159,6 +144,7 @@ pub async fn render(
 
     let outcome = run_export_webview(handle, &html_path, &token, format == "pdf").await;
     let _ = std::fs::remove_file(&html_path);
+    crate::commands::remove_export_doc(handle, &token);
 
     match outcome {
         Ok(bytes) => {
@@ -168,6 +154,33 @@ pub async fn render(
         }
         Err(message) => Err(err("unexpected-error", message)),
     }
+}
+
+/// 免对话框的导出（自动化验证用）：与 render 相同的渲染管线，
+/// 直接写入指定路径。
+pub async fn render_to_path(
+    handle: &AppHandle,
+    format: &str,
+    html: &str,
+    target: &Path,
+    assets_dir: Option<&str>,
+) -> Result<(), ServiceError> {
+    let base_dir = assets_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let token = format!("{:016x}", rand::thread_rng().next_u64());
+    let html_path = base_dir.join(format!(".markdesk-export-{token}.html"));
+    std::fs::write(&html_path, html.as_bytes())
+        .map_err(|_| err("write-failed", "导出临时文件写入失败。"))?;
+
+    let outcome = run_export_webview(handle, &html_path, &token, format == "pdf").await;
+    let _ = std::fs::remove_file(&html_path);
+    crate::commands::remove_export_doc(handle, &token);
+
+    let bytes = outcome.map_err(|message| err("unexpected-error", message))?;
+    std::fs::write(target, &bytes)
+        .map_err(|_| err("write-failed", "导出文件写入失败。"))?;
+    Ok(())
 }
 
 async fn run_export_webview(
@@ -181,45 +194,41 @@ async fn run_export_webview(
     let url = format!("{}export-html/{}/index.html", resource_base(), token);
     let parsed: tauri::Url = url.parse().map_err(|_| "invalid url".to_string())?;
     let window = WebviewWindowBuilder::new(handle, &label, WebviewUrl::External(parsed))
-        .visible(false)
+        // 不能完全隐藏：Chromium 会挂起不可见渲染器，页面加载被无限
+        // 延迟。移到屏幕外 + 去边框，视觉上等效隐藏但保持可渲染。
+        .visible(true)
+        .decorations(false)
+        .skip_taskbar(true)
+        .position(-32000.0, -32000.0)
         .inner_size(1200.0, 1600.0)
         .build()
         .map_err(|error| format!("创建导出窗口失败：{error}"))?;
 
-    // 等待页面加载完成。
+    // 等待页面加载完成（90 秒绝对时限；探测 20 秒超时）。
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
     let mut ready = false;
-    for _ in 0..100 {
-        let probe = with_core(&window, |core| {
-            webview2::execute_script(core, "document.readyState")
-        });
-        if matches!(&probe, Ok(Ok(state)) if state.trim_matches('"') == "complete") {
+    while std::time::Instant::now() < deadline {
+        let probe = webview2::execute_script(&window, "document.readyState");
+        if matches!(&probe, Ok(state) if state.trim_matches('"') == "complete") {
             ready = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     if !ready {
         let _ = window.destroy();
         return Err("导出页面加载超时".to_string());
     }
 
-    let result = with_core(&window, move |core| unsafe {
-        if pdf {
-            print_to_pdf(core)
-        } else {
-            screenshot(core)
-        }
-    });
+    let result = if pdf { print_to_pdf(&window) } else { screenshot(&window) };
     let _ = window.destroy();
-    result.and_then(|inner| inner)
+    result
 }
 
 #[cfg(windows)]
-unsafe fn print_to_pdf(
-    core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
-) -> Result<Vec<u8>, String> {
+fn print_to_pdf(window: &tauri::WebviewWindow) -> Result<Vec<u8>, String> {
     let json = webview2::call_devtools(
-        core,
+        window,
         "Page.printToPDF",
         r#"{"printBackground":true,"paperWidth":8.27,"paperHeight":11.69,"marginTop":0.4,"marginBottom":0.4,"marginLeft":0.4,"marginRight":0.4}"#,
     )?;
@@ -227,13 +236,11 @@ unsafe fn print_to_pdf(
 }
 
 #[cfg(windows)]
-unsafe fn screenshot(
-    core: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
-) -> Result<Vec<u8>, String> {
-    let _ = webview2::call_devtools(core, "Page.enable", "{}")?;
+fn screenshot(window: &tauri::WebviewWindow) -> Result<Vec<u8>, String> {
+    let _ = webview2::call_devtools(window, "Page.enable", "{}")?;
     // captureBeyondViewport 让 Chromium 先按整页尺寸调整视口再截图。
     let json = webview2::call_devtools(
-        core,
+        window,
         "Page.captureScreenshot",
         r#"{"format":"png","captureBeyondViewport":true}"#,
     )?;

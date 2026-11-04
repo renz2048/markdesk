@@ -12,6 +12,7 @@ import { chromium } from "@playwright/test";
 
 const exe =
   process.argv[2] ?? "src-tauri/target/release/markdesk.exe";
+const debugPort = 9300 + Math.floor(Math.random() * 400);
 const docDir = await mkdtemp(join(tmpdir(), "markdesk-smoke-"));
 const picDir = await mkdtemp(join(tmpdir(), "markdesk-smokepic-"));
 const pngPath = join(picDir, "pixel.png").split(/[\\/]/u).join("/");
@@ -33,16 +34,29 @@ const child = spawn(exe, [markdownPath], {
   env: {
     ...process.env,
     MARKDESK_DATA_DIR: join(docDir, "appdata"),
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=9223",
+    // 独立的 WebView2 用户数据目录 + 随机调试端口：避免与残留的
+    // 浏览器进程复用（复用时会连到旧实例导致卡死）。
+    WEBVIEW2_USER_DATA_FOLDER: join(docDir, "webview"),
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
   },
   stdio: "ignore",
 });
+
+// 看门狗：任何环节卡死都不让脚本无限挂起。
+const watchdog = setTimeout(() => {
+  console.error("FAIL: 冒烟测试超时（10 分钟），强制退出");
+  child.kill("SIGKILL");
+  process.exit(1);
+}, 10 * 60 * 1000);
+watchdog.unref?.();
 
 let browser = null;
 for (let attempt = 0; attempt < 40 && !browser; attempt += 1) {
   await new Promise((resolve) => setTimeout(resolve, 500));
   try {
-    browser = await chromium.connectOverCDP("http://127.0.0.1:9223");
+    browser = await chromium.connectOverCDP(
+      `http://127.0.0.1:${debugPort}`,
+    );
   } catch {
     browser = null;
   }
@@ -133,7 +147,13 @@ const invoke = (command, args) =>
         const value = await window.__TAURI_INTERNALS__.invoke(command, args);
         return { ok: true, value };
       } catch (error) {
-        return { ok: false, error: String(error) };
+        return {
+          ok: false,
+          error:
+            typeof error === "object" && error !== null
+              ? JSON.stringify(error)
+              : String(error),
+        };
       }
     },
     { command, args },
@@ -159,8 +179,47 @@ if (!readBack.ok) {
   );
 }
 
+// 6. PDF/PNG 导出（export_rendered_to 与菜单导出走同一渲染管线，
+//    仅免去了原生保存对话框；校验产物文件魔数）。
+const exportHtml =
+  "<!doctype html><meta charset='utf-8'><h1>导出验证</h1><p>MarkDesk export smoke</p>";
+const readHead = async (file, length) =>
+  Buffer.from(await readFile(file)).subarray(0, length).toString("latin1");
+try {
+  const pdfPath = join(docDir, "smoke-export.pdf");
+  const pdfResult = await invoke("export_rendered_to", {
+    format: "pdf",
+    html: exportHtml,
+    path: pdfPath,
+    assetsDir: docDir,
+  });
+  check(
+    `PDF 导出（%PDF 头，${pdfResult.ok ? "invoke ok" : pdfResult.error}）`,
+    pdfResult.ok && (await readHead(pdfPath, 5)) === "%PDF-",
+  );
+} catch (error) {
+  check(`PDF 导出失败：${error}`, false);
+}
+try {
+  const pngPath = join(docDir, "smoke-export.png");
+  const pngResult = await invoke("export_rendered_to", {
+    format: "png",
+    html: exportHtml,
+    path: pngPath,
+    assetsDir: docDir,
+  });
+  check(
+    `PNG 导出（PNG 签名，${pngResult.ok ? "invoke ok" : pngResult.error}）`,
+    pngResult.ok &&
+      (await readHead(pngPath, 8)) === "\x89PNG\r\n\x1a\n",
+  );
+} catch (error) {
+  check(`PNG 导出失败：${error}`, false);
+}
+
 await browser.close();
 child.kill("SIGKILL");
+clearTimeout(watchdog);
 const failed = results.filter((item) => !item.pass);
 console.log(
   `\n${results.length - failed.length}/${results.length} passed`,

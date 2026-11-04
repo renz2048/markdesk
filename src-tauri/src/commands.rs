@@ -484,6 +484,34 @@ pub fn register_export_doc(handle: &AppHandle, token: &str, path: PathBuf) {
     });
 }
 
-pub fn take_export_doc(handle: &AppHandle, token: &str) -> Option<PathBuf> {
-    with_inner(handle, |inner| inner.export_docs.remove(token))
+/// 查询（不消费）：页面加载后还有相对图片请求，导出结束再统一清理。
+pub fn peek_export_doc(handle: &AppHandle, token: &str) -> Option<PathBuf> {
+    read_inner(handle, |inner| inner.export_docs.get(token).cloned())
+}
+
+pub fn remove_export_doc(handle: &AppHandle, token: &str) {
+    with_inner(handle, |inner| {
+        inner.export_docs.remove(token);
+    });
+}
+
+/// 免对话框导出（自动化验证）：与 export_rendered 同一渲染管线，
+/// 直接写入指定路径。
+#[tauri::command]
+pub async fn export_rendered_to(
+    handle: AppHandle,
+    format: String,
+    html: String,
+    path: String,
+    assets_dir: Option<String>,
+) -> CommandResult<()> {
+    crate::export::render_to_path(
+        &handle,
+        &format,
+        &html,
+        Path::new(&path),
+        assets_dir.as_deref(),
+    )
+    .await
+    .map_err(IpcError::from)
 }
