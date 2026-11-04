@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MarkDesk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "io.markdesk.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -26,8 +26,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
@@ -36,13 +40,19 @@
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico",
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"],
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
         "displayLanguageSelector": false
       }
     },
     "fileAssociations": [
       {
-        "ext": ["md", "markdown"],
+        "ext": [
+          "md",
+          "markdown"
+        ],
         "name": "Markdown 文档",
         "description": "Markdown 文档",
         "role": "Editor"
