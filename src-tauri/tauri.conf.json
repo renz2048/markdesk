@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' markdesk-resource: http://markdesk-resource.localhost https: http: data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://markdesk-resource.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http://markdesk-resource.localhost https: http: data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://markdesk-resource.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {

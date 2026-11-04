@@ -218,7 +218,7 @@ export interface MarkDeskRendererApi {
   checkImageGrants(srcs: string[]): Promise<string[]>;
   /** 用户同意后授权一组本地绝对路径图片显示，主进程持久化记忆。 */
   grantImagePaths(srcs: string[]): Promise<string[]>;
-  getDroppedFilePath(file: File): string;
+  /** 拖放文件的路径在 WebView 中不可得，改由 onNativeDropPaths 提供。 */
   setThemePreference(theme: ThemePreferenceSetting): Promise<void>;
   writeFile(
     path: string,
@@ -245,7 +245,9 @@ export interface MarkDeskRendererApi {
   onCloseRequested(listener: () => void): () => void;
   requestClose(): Promise<void>;
   cancelClose(): Promise<void>;
-  /** Tauri 专用：同步原生窗口标题（Electron 由主进程自动跟随 document.title）。 */
+  /** 拉取启动参数携带的待打开文档路径（一次性，argv 双击打开场景）。 */
+  getStartupOpenPath?(): Promise<string | null>;
+  /** Tauri 专用：同步原生窗口标题。 */
   setWindowTitle?(title: string): Promise<void>;
   /** Tauri 专用：原生文件拖放（WebView 拿不到 File 对象，只有路径+坐标）。 */
   onNativeDropPaths?(listener: (payload: {

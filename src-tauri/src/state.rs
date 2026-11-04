@@ -98,6 +98,8 @@ pub struct Inner {
     pub export_docs: HashMap<String, PathBuf>,
     /// 已批准关闭的窗口标签（关闭保护握手）。
     pub closing_windows: HashSet<String>,
+    /// 启动参数携带的待打开文档（渲染端挂载后拉取，消除事件竞态）。
+    pub pending_open: Option<String>,
 }
 
 impl Default for Inner {
@@ -113,6 +115,7 @@ impl Default for Inner {
             pandoc_available: None,
             export_docs: HashMap::new(),
             closing_windows: HashSet::new(),
+            pending_open: None,
         }
     }
 }

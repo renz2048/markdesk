@@ -90,10 +90,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            // MARKDESK_DATA_DIR 覆盖数据目录（冒烟/测试隔离用），
+            // 默认为系统应用数据目录。
+            let data_dir = std::env::var("MARKDESK_DATA_DIR")
+                .ok()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    app.path()
+                        .app_data_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                });
             app.manage(App::new(data_dir));
             app.manage(watcher::Watchers::default());
 
@@ -126,24 +132,19 @@ pub fn run() {
                 });
             }
 
-            // argv：双击 .md 或命令行传参直接打开（对齐 Electron openExternalPath）。
+            // argv：双击 .md 或命令行传参直接打开。存入 pending_open，
+            // 由渲染端挂载后主动拉取（take_argv_open_path），避免
+            // “事件早于监听器就绪”的竞态。
             if let Some(argument) = std::env::args().nth(1) {
                 let canonical = policy::canonicalize(&argument);
                 if policy::is_markdown_path(&canonical) && service::file_exists(&canonical) {
                     {
                         let app_state = handle.state::<App>();
-                        app_state.inner.lock().unwrap().read_grants.insert(canonical.clone());
+                        let mut inner = app_state.inner.lock().unwrap();
+                        inner.read_grants.insert(canonical.clone());
+                        inner.pending_open = Some(canonical.clone());
                     }
                     handle.state::<App>().upsert_recent(&canonical);
-                    let path = canonical.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(900));
-                        let _ = tauri::Emitter::emit(
-                            &handle,
-                            "open-recent-file",
-                            serde_json::json!({ "path": path }),
-                        );
-                    });
                 }
             }
             Ok(())
@@ -211,6 +212,7 @@ pub fn run() {
             commands::set_window_title,
             commands::request_close,
             commands::cancel_close,
+            commands::take_argv_open_path,
         ])
         .run(tauri::generate_context!())
         .expect("MarkDesk 启动失败");

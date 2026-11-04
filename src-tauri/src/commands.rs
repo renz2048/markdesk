@@ -471,6 +471,12 @@ pub fn cancel_close(handle: AppHandle, window: WebviewWindow) -> CommandResult<(
     Ok(())
 }
 
+/// 渲染端挂载后拉取启动参数携带的待打开文档（一次性）。
+#[tauri::command]
+pub fn take_argv_open_path(handle: AppHandle) -> CommandResult<Option<String>> {
+    Ok(with_inner(&handle, |inner| inner.pending_open.take()))
+}
+
 /// 供导出临时 HTML 通过资源协议加载：登记 token → 文件路径。
 pub fn register_export_doc(handle: &AppHandle, token: &str, path: PathBuf) {
     with_inner(handle, |inner| {

@@ -6,18 +6,14 @@ import { Schema } from "prosemirror-model";
  * 输出。导出 HTML 时由 exportHtml 反向剥离协议前缀。
  */
 // 本地绝对路径（Windows 盘符 / UNC / POSIX）：显示时编码进资源协议的
-// absolute/ 分支（需求 4.5，授权解析见主进程 resolveResourcePath）。
+// absolute/ 分支（需求 4.5，授权解析见主进程 resolve_resource_path）。
 const absolutePathPattern = /^(?:[a-zA-Z]:[\\/]|\\\\|\/[^\\/])/u;
 
-// Tauri（WebView2）上自定义协议以 http://<scheme>.localhost/ 形式寻址，
-// Electron 上是原生 scheme；两种形式共用同一套前缀常量。
-const TAURI_RESOURCE_PREFIX = "http://markdesk-resource.localhost/";
-const ELECTRON_RESOURCE_PREFIX = "markdesk-resource:";
-const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+// markdesk-resource 协议在 WebView2 上的寻址形式（Tauri 注册的自定义
+// 协议以 http://<scheme>.localhost/ 出现，主进程按授权解析）。
+const RESOURCE_PREFIX = "http://markdesk-resource.localhost/";
 
-export const resourceProtocolPrefix = isTauri
-  ? TAURI_RESOURCE_PREFIX
-  : ELECTRON_RESOURCE_PREFIX;
+export const resourceProtocolPrefix = RESOURCE_PREFIX;
 
 /** 图片 src 是否为本地绝对路径（Windows 盘符 / UNC / POSIX）。 */
 export function isLocalAbsolutePath(src: string): boolean {
@@ -26,18 +22,17 @@ export function isLocalAbsolutePath(src: string): boolean {
 
 export function editorImageSrc(src: string): string {
   if (isLocalAbsolutePath(src)) {
-    return `${resourceProtocolPrefix}absolute/${encodeURIComponent(src)}`;
+    return `${RESOURCE_PREFIX}absolute/${encodeURIComponent(src)}`;
   }
   if (
     src.length === 0 ||
     src.startsWith("/") ||
-    src.startsWith(TAURI_RESOURCE_PREFIX) ||
-    src.startsWith(ELECTRON_RESOURCE_PREFIX) ||
+    src.startsWith(RESOURCE_PREFIX) ||
     /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(src)
   ) {
     return src;
   }
-  return `${resourceProtocolPrefix}${src}`;
+  return `${RESOURCE_PREFIX}${src}`;
 }
 
 /** editorImageSrc 的逆变换：导出 HTML 时还原作者书写的路径。 */

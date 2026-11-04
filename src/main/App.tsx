@@ -872,36 +872,10 @@ export default function App() {
     [api, resolvedTheme],
   );
 
-  // 拖入本地图片（需求 4.5）：已保存文档时由主进程判定路径归属
-  //（文档目录内→相对路径；目录外→绝对路径并登记显示授权）；未保存
-  // 文档复用粘贴流程内嵌 data URL。
-  const handleDropImage = useCallback(
-    async (file: File): Promise<string | null> => {
-      const docPath = useDocumentStore.getState().filePath;
-      let imagePath = "";
-      try {
-        imagePath = api?.getDroppedFilePath(file) ?? "";
-      } catch {
-        imagePath = "";
-      }
-      if (api && docPath && imagePath) {
-        try {
-          const { src } = await api.insertDroppedImage(docPath, imagePath);
-          return src;
-        } catch (error) {
-          // 路径判定失败（如文档未授权）时降级为内嵌。
-          setFileActionError(toFileActionError(error));
-          return handlePasteImage(file);
-        }
-      }
-      return handlePasteImage(file);
-    },
-    [api, handlePasteImage],
-  );
-
-  // Tauri：WebView 拿不到拖放文件的 File 对象，由原生拖放事件
-  //（路径 + 坐标）驱动，行为与 createDropImagePlugin 对齐：
-  // 落点换算光标位置插入，路径经主进程判定相对/绝对。
+  // 拖入本地图片（需求 4.5）：WebView 拿不到拖放文件的 File 对象，
+  // 由原生拖放事件（路径 + 坐标）驱动，落点换算光标位置插入；
+  // 路径经主进程判定（文档目录内→相对路径；目录外→绝对路径并登记
+  // 显示授权）。
   const insertDroppedImagesAt = useCallback(
     async (
       paths: string[],
@@ -1375,6 +1349,28 @@ export default function App() {
     });
   }, [api, requestFileAction]);
 
+  // 启动参数携带的文档（argv 双击打开）：渲染端就绪后主动拉取一次，
+  // 避免“事件早于监听器就绪”的竞态。
+  useEffect(() => {
+    if (!api?.getStartupOpenPath) return;
+    let cancelled = false;
+    void api
+      .getStartupOpenPath()
+      .then((path) => {
+        if (!cancelled && path) {
+          requestFileAction({ type: "open", path });
+        }
+      })
+      .catch(() => {
+        // 拉取失败不影响正常启动。
+      });
+    return () => {
+      cancelled = true;
+    };
+    // 仅在挂载时执行一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!api) return;
     return api.onCloseRequested(() => {
@@ -1627,7 +1623,6 @@ export default function App() {
                     sessionKey={sessionKey}
                     onChange={handleDocumentChange}
                     onPasteImage={handlePasteImage}
-                    onDropImage={handleDropImage}
                   />
                 ) : mode === "source" ? (
                   <SourceEditor

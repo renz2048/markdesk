@@ -23,8 +23,6 @@ interface Props {
   onChange(doc: Node): void;
   // 返回待插入的图片 src（相对路径或 data: URI）；null 表示放弃插入。
   onPasteImage?(file: File): Promise<string | null>;
-  // 拖入本地图片的解析（文档目录内相对路径 / 目录外绝对路径 / 内嵌）。
-  onDropImage?(file: File): Promise<string | null>;
 }
 
 // 从剪贴板条目中提取图片文件（截图通常没有名字，由调用方生成）。
@@ -95,53 +93,12 @@ export function createPasteImagePlugin(
   });
 }
 
-export function createDropImagePlugin(
-  getSource: (file: File) => Promise<string | null>,
-): Plugin {
-  return new Plugin({
-    props: {
-      // 从系统拖入图片文件：在落点插入（编辑区内部拖动 moved 不处理）。
-      handleDrop(view, event) {
-        if (event.dataTransfer === null) return false;
-        const files = imageFilesFromClipboard(event.dataTransfer.items);
-        if (files.length === 0) return false;
-        event.preventDefault();
-        // 落点计算在个别环境（jsdom）不可用，退回当前选区位置。
-        let anchor = view.state.selection.from;
-        try {
-          const dropPos = view.posAtCoords({
-            left: event.clientX,
-            top: event.clientY,
-          });
-          if (dropPos) anchor = dropPos.pos;
-        } catch {
-          // 保持选区位置。
-        }
-        void (async () => {
-          for (const file of files) {
-            const src = await getSource(file);
-            if (!src) continue;
-            const image = view.state.schema.nodes.image.create({
-              src,
-              alt: file.name || "图片",
-            });
-            // 等待期间视图可能被销毁（切换文档），失败即静默终止。
-            try {
-              view.dispatch(view.state.tr.insert(anchor, image));
-            } catch {
-              return;
-            }
-          }
-        })();
-        return true;
-      },
-    },
-  });
-}
+// 注：文件拖入不走 ProseMirror 的 handleDrop——Tauri（WebView2）拦截
+// DOM 拖放且拿不到 File 对象，原生路径+坐标事件由 App 层的
+// insertDroppedImagesAt 处理（见 src/main/App.tsx）。
 
 export function createEditorPlugins(
   getPasteImageSource?: (file: File) => Promise<string | null>,
-  getDropImageSource?: (file: File) => Promise<string | null>,
 ): Plugin[] {
   return [
     history(),
@@ -169,9 +126,6 @@ export function createEditorPlugins(
     ...(getPasteImageSource
       ? [createPasteImagePlugin(getPasteImageSource)]
       : []),
-    ...(getDropImageSource
-      ? [createDropImagePlugin(getDropImageSource)]
-      : []),
   ];
 }
 
@@ -181,12 +135,10 @@ export function WysiwygEditor({
   sessionKey,
   onChange,
   onPasteImage,
-  onDropImage,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const onChangeRef = useRef(onChange);
   const onPasteImageRef = useRef(onPasteImage);
-  const onDropImageRef = useRef(onDropImage);
   const initialCursorRef = useRef(initialCursor);
   const [view, setView] = useState<EditorView | null>(null);
   const [linkDraft, setLinkDraft] = useState<LinkDraft | null>(null);
@@ -200,10 +152,6 @@ export function WysiwygEditor({
   useEffect(() => {
     onPasteImageRef.current = onPasteImage;
   }, [onPasteImage]);
-
-  useEffect(() => {
-    onDropImageRef.current = onDropImage;
-  }, [onDropImage]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -224,10 +172,6 @@ export function WysiwygEditor({
         onPasteImageRef.current
           ? (file) =>
               onPasteImageRef.current?.(file) ?? Promise.resolve(null)
-          : undefined,
-        onDropImageRef.current
-          ? (file) =>
-              onDropImageRef.current?.(file) ?? Promise.resolve(null)
           : undefined,
       ),
     });

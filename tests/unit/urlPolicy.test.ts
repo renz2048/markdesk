@@ -58,9 +58,9 @@ describe("shared Markdown URL policy", () => {
     expect(normalizeImageSrc("data:image/svg+xml,<svg></svg>")).toBe(
       "data:image/svg+xml,<svg></svg>",
     );
-    expect(normalizeImageSrc("markdesk-resource:images/a.png")).toBe(
-      "markdesk-resource:images/a.png",
-    );
+    expect(
+      normalizeImageSrc("http://markdesk-resource.localhost/images/a.png"),
+    ).toBe("http://markdesk-resource.localhost/images/a.png");
   });
 
   it("rejects unsafe or malformed image sources", () => {
@@ -75,7 +75,8 @@ describe("shared Markdown URL policy", () => {
       "vbscript:msgbox(1)",
       "file:///etc/passwd.png",
       "data:text/html,<script>alert(1)</script>",
-      "markdesk-resource:/../outside.png",
+      "http://markdesk-resource.localhost/../outside.png",
+      "markdesk-resource:images/a.png",
       "https://",
     ]) {
       expect(() => normalizeImageSrc(src)).toThrow(

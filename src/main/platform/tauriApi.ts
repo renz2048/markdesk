@@ -102,7 +102,6 @@ export function createTauriApi(): MarkDeskRendererApi {
       call<string[]>("check_image_grants", { srcs }),
     grantImagePaths: (srcs: string[]) =>
       call<string[]>("grant_image_paths", { srcs }),
-    getDroppedFilePath: () => "",
     getRecentFiles: () => call<RecentFileStatus[]>("get_recent_files"),
     readRecentFile: (path: string) =>
       call<FileReadResult>("read_recent_file", { path }),
@@ -191,6 +190,7 @@ export function createTauriApi(): MarkDeskRendererApi {
     },
     requestClose: () => call<void>("request_close"),
     cancelClose: () => call<void>("cancel_close"),
+    getStartupOpenPath: () => call<string | null>("take_argv_open_path"),
     setWindowTitle: (title: string) =>
       call<void>("set_window_title", { title }),
     onNativeDropPaths: (listener: NativeDropListener) => {

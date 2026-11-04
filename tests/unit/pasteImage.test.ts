@@ -6,7 +6,6 @@ import { EditorView } from "prosemirror-view";
 import { markdownSchema } from "../../src/markdown/schema";
 import { parseMarkdown } from "../../src/markdown/parser";
 import {
-  createDropImagePlugin,
   createPasteImagePlugin,
   imageFilesFromClipboard,
 } from "../../src/main/components/WysiwygEditor";
@@ -144,73 +143,6 @@ describe("paste image plugin", () => {
     expect(run.handled).toBeFalsy();
     expect(run.preventDefault).not.toHaveBeenCalled();
     expect(source).not.toHaveBeenCalled();
-    view.destroy();
-  });
-});
-
-describe("createDropImagePlugin（需求 4.5 拖入图片）", () => {
-  function createDropView(
-    source: (file: File) => Promise<string | null>,
-  ): EditorView {
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    return new EditorView(host, {
-      state: EditorState.create({
-        schema: markdownSchema,
-        doc: parseMarkdown("正文\n"),
-        plugins: [createDropImagePlugin(source)],
-      }),
-    });
-  }
-
-  function runHandleDrop(
-    view: EditorView,
-    transfer: FakeTransfer,
-  ): { handled: boolean; prevented: boolean } {
-    const preventDefault = vi.fn();
-    const handled =
-      view.someProp("handleDrop", (handler) =>
-        handler(
-          view,
-          {
-            dataTransfer: transfer,
-            preventDefault,
-            clientX: 0,
-            clientY: 0,
-          } as unknown as DragEvent,
-          emptySlice,
-          false,
-        ) || false,
-      ) ?? false;
-    return { handled, prevented: preventDefault.mock.calls.length > 0 };
-  }
-
-  it("拖入图片文件时在光标处插入", async () => {
-    const view = createDropView(async (file) => `resolved:${file.name}`);
-    const { handled, prevented } = runHandleDrop(
-      view,
-      clipboardWith(pngFile("drop.png")),
-    );
-    expect(handled).toBe(true);
-    expect(prevented).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const image = view.state.doc.content.firstChild?.content.firstChild;
-    expect(image?.type.name).toBe("image");
-    expect(image?.attrs.src).toBe("resolved:drop.png");
-    view.destroy();
-  });
-
-  it("无图片文件或解析放弃时不处理", async () => {
-    const view = createDropView(async () => null);
-    const empty = runHandleDrop(
-      view,
-      clipboardWith(),
-    );
-    expect(empty.handled).toBe(false);
-    const gaveUp = runHandleDrop(view, clipboardWith(pngFile("x.png")));
-    expect(gaveUp.handled).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(view.state.doc.content.firstChild?.childCount).toBe(1);
     view.destroy();
   });
 });
