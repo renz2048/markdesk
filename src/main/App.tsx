@@ -217,6 +217,63 @@ function hasLocalImageExtension(src: string): boolean {
   return localImageExtensions.has(src.slice(dot + 1).toLowerCase());
 }
 
+/**
+ * 窗口层快捷键 → 菜单命令（与菜单展示的加速键一致）。Tauri（WebView2）
+ * 聚焦时原生菜单加速键不触发，需要渲染端补一份；编辑器内部快捷键
+ *（加粗/斜体/链接等）不在此列，避免与 ProseMirror keymap 重复触发。
+ */
+function menuShortcutCommand(
+  shift: boolean,
+  key: string,
+): MenuCommand | null {
+  switch (key) {
+    case "s":
+      return shift ? "save-as" : "save";
+    case "n":
+      return shift ? null : "new";
+    case "o":
+      return shift ? "paragraph-ordered-list" : "open";
+    case "w":
+      return null; // Ctrl+W 走关闭保护流程，见下方监听器
+    case "/":
+      return "toggle-source";
+    case "t":
+      return "paragraph-table";
+    case "=":
+      return "paragraph-heading-promote";
+    case "-":
+      return shift ? "paragraph-horizontal-rule" : "paragraph-heading-demote";
+    case "_":
+      return "paragraph-horizontal-rule";
+    case "0":
+      return "paragraph-paragraph";
+    case "1":
+      return "paragraph-heading-1";
+    case "2":
+      return "paragraph-heading-2";
+    case "3":
+      return "paragraph-heading-3";
+    case "4":
+      return "paragraph-heading-4";
+    case "5":
+      return "paragraph-heading-5";
+    case "6":
+      return "paragraph-heading-6";
+    case "k":
+      return shift ? "paragraph-code-block" : null;
+    case "q":
+      return shift ? "paragraph-quote" : null;
+    case "u":
+      return shift ? "paragraph-bullet-list" : null;
+    case "i":
+      return shift ? "format-image" : null;
+    case "\\":
+      return "format-clear";
+    default:
+      return null;
+  }
+}
+
 /** 拆出文件名与所在目录（两种分隔符都接受），用于授权清单展示。 */
 function splitLocalImagePath(src: string): { name: string; directory: string } {
   const index = Math.max(src.lastIndexOf("/"), src.lastIndexOf("\\"));
@@ -1348,6 +1405,27 @@ export default function App() {
       requestFileAction({ type: "open", path: event.path });
     });
   }, [api, requestFileAction]);
+
+  // Tauri（WebView2）聚焦时原生菜单加速键不触发，在窗口层按同一套
+  // 快捷键分发菜单命令；Ctrl+W 走与原生关闭一致的确认流程。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.altKey) return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "w" && !event.shiftKey) {
+        event.preventDefault();
+        requestFileAction({ type: "close" });
+        return;
+      }
+      const command = menuShortcutCommand(event.shiftKey, key);
+      if (!command) return;
+      event.preventDefault();
+      handleMenuCommand(command);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleMenuCommand, requestFileAction]);
 
   // 启动参数携带的文档（argv 双击打开）：渲染端就绪后主动拉取一次，
   // 避免“事件早于监听器就绪”的竞态。

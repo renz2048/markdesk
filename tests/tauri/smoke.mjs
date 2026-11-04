@@ -95,7 +95,17 @@ const listCount = await page
   .count();
 check("“- ” 即时转列表", listCount >= 1);
 
-// 4. 目录外图片 → 授权横幅出现；全部允许后经受限协议真实加载。
+// 4. Ctrl+S 快捷键保存（窗口层快捷键 → 菜单命令 → write_file 落盘）。
+await page.keyboard.type("追加文本");
+await page.keyboard.press("Control+s");
+let savedText = "";
+for (let i = 0; i < 20 && !savedText.includes("追加文本"); i += 1) {
+  await page.waitForTimeout(300);
+  savedText = await readFile(markdownPath, "utf8");
+}
+check("Ctrl+S 快捷键保存", savedText.includes("追加文本"));
+
+// 5. 目录外图片 → 授权横幅出现；全部允许后经受限协议真实加载。
 try {
   await page.getByTestId("local-images-notice").waitFor({ timeout: 5000 });
   await page.getByTestId("local-images-allow").click();
@@ -114,7 +124,7 @@ try {
   check("授权横幅未出现", false);
 }
 
-// 5. 保存链路：读取 → 携带 expected 指纹写入 → 磁盘内容验证
+// 6. 保存链路：读取 → 携带 expected 指纹写入 → 磁盘内容验证
 //（覆盖“文件指纹无效”回归：指纹字段为 camelCase）。
 const invoke = (command, args) =>
   page.evaluate(
