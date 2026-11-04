@@ -33,7 +33,10 @@ pub struct RecoveryDraft {
     pub updated_at: f64,
 }
 
+// 字段与渲染端 FileFingerprint 契约一致（camelCase）；漏掉 rename_all
+// 会让带指纹的保存整体失败（invalid-fingerprint）。
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Fingerprint {
     pub hash: String,
     pub mtime_ms: f64,
@@ -263,6 +266,27 @@ pub fn now_ms() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_millis() as f64)
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_round_trips_camel_case() {
+        // 渲染端 writeFile 携带的 expected 是 camelCase（mtimeMs），
+        // 反序列化失败即 invalid-fingerprint（保存失败的回归）。
+        let parsed: Fingerprint = serde_json::from_value(serde_json::json!({
+            "hash": "abc",
+            "mtimeMs": 12.5,
+            "size": 34.0
+        }))
+        .expect("camelCase 指纹必须可反序列化");
+        assert_eq!(parsed.mtime_ms, 12.5);
+        assert_eq!(parsed.size, 34.0);
+        let serialized = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(serialized["mtimeMs"], 12.5);
+    }
 }
 
 /// 临时文件 + rename 的原子写（Windows 的 rename 支持覆盖既有目标）。

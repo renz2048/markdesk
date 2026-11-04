@@ -4,7 +4,7 @@
 //
 // 前置：npm run dist（生成 src-tauri/target/release/markdesk.exe）
 // 运行：npm run smoke [exe路径]
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -112,6 +112,41 @@ try {
   check(`受限协议图片加载（naturalWidth=${width}）`, width > 0);
 } catch {
   check("授权横幅未出现", false);
+}
+
+// 5. 保存链路：读取 → 携带 expected 指纹写入 → 磁盘内容验证
+//（覆盖“文件指纹无效”回归：指纹字段为 camelCase）。
+const invoke = (command, args) =>
+  page.evaluate(
+    async ({ command, args }) => {
+      try {
+        const value = await window.__TAURI_INTERNALS__.invoke(command, args);
+        return { ok: true, value };
+      } catch (error) {
+        return { ok: false, error: String(error) };
+      }
+    },
+    { command, args },
+  );
+const readBack = await invoke("read_file", { path: markdownPath });
+if (!readBack.ok) {
+  check("保存链路（read_file）", false);
+} else {
+  const saved = await invoke("write_file", {
+    path: markdownPath,
+    content: "# 冒烟\n\n保存验证\n",
+    newline: "lf",
+    expected: {
+      hash: readBack.value.hash,
+      mtimeMs: readBack.value.mtimeMs,
+      size: readBack.value.size,
+    },
+  });
+  const onDisk = await readFile(markdownPath, "utf8");
+  check(
+    `保存链路（指纹写入，${saved.ok ? "ok" : saved.error}）`,
+    saved.ok && onDisk.includes("保存验证"),
+  );
 }
 
 await browser.close();
