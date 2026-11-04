@@ -217,6 +217,13 @@ try {
   check(`PNG 导出失败：${error}`, false);
 }
 
+// 7. 导出临时文件写在文档目录，不得触发“文件已在其他程序中修改”。
+await page.waitForTimeout(2000);
+const changedNotice = await page
+  .getByTestId("file-changed-notice")
+  .count();
+check("导出不触发外部修改提示", changedNotice === 0);
+
 await browser.close();
 child.kill("SIGKILL");
 clearTimeout(watchdog);

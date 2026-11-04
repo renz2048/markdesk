@@ -194,15 +194,18 @@ async fn run_export_webview(
     let url = format!("{}export-html/{}/index.html", resource_base(), token);
     let parsed: tauri::Url = url.parse().map_err(|_| "invalid url".to_string())?;
     let window = WebviewWindowBuilder::new(handle, &label, WebviewUrl::External(parsed))
-        // 不能完全隐藏：Chromium 会挂起不可见渲染器，页面加载被无限
-        // 延迟。移到屏幕外 + 去边框，视觉上等效隐藏但保持可渲染。
-        .visible(true)
+        // 完全隐藏会被 Chromium 挂起渲染，因此“隐藏创建 → 显式定位到
+        // 屏幕外 → 再显示”，既不闪现又保持渲染器活跃。
+        .visible(false)
         .decorations(false)
         .skip_taskbar(true)
+        .focused(false)
         .position(-32000.0, -32000.0)
         .inner_size(1200.0, 1600.0)
         .build()
         .map_err(|error| format!("创建导出窗口失败：{error}"))?;
+    let _ = window.set_position(tauri::LogicalPosition::new(-32000.0, -32000.0));
+    let _ = window.show();
 
     // 等待页面加载完成（90 秒绝对时限；探测 20 秒超时）。
     let deadline = std::time::Instant::now() + Duration::from_secs(90);

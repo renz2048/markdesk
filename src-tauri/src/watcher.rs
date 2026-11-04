@@ -30,9 +30,19 @@ pub fn watch(handle: AppHandle, canonical: &str) {
     }
     let path = PathBuf::from(canonical);
     let event_path = canonical.to_string();
+    // 监听的是父目录（覆盖 rename/replace 类事件），因此必须按路径
+    // 过滤：只允许被监视文档本身的事件通过——导出临时文件
+    //（.markdesk-export-*、.markdesk-pandoc-*）与保存的临时文件都写在
+    // 同一目录，不能触发“已被外部修改”误报。
+    let watched_normalized = crate::policy::normalize_unresolved(canonical);
     let app = handle.clone();
     let inner = move |event: Result<notify::Event, notify::Error>| {
-        if event.is_err() {
+        let Ok(event) = event else { return };
+        let touches_doc = event.paths.iter().any(|event_path| {
+            crate::policy::normalize_unresolved(&event_path.to_string_lossy())
+                == watched_normalized
+        });
+        if !touches_doc {
             return;
         }
         // 去抖 300ms：编辑器保存常触发多个事件。

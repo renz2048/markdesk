@@ -1,6 +1,6 @@
 [package]
 name = "markdesk"
-version = "0.4.1"
+version = "0.4.2"
 description = "MarkDesk - 安全的单文件 Markdown 阅读器与编辑器"
 edition = "2021"
 
