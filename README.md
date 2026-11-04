@@ -130,7 +130,7 @@ npm run dist         # 打包 NSIS 安装包（src-tauri/target/release/bundle/n
 npm run dist
 ```
 
-产物：`src-tauri/target/release/bundle/nsis/MarkDesk_<版本号>_x64-setup.exe`
+产物：`src-tauri/target/release/bundle/nsis/MarkDesk_<版本号>_x64.exe`
 （约 4 MB，NSIS、按用户安装、支持 .md/.markdown 文件关联）。
 
 打包行为定义在 `src-tauri/tauri.conf.json`；应用图标源为

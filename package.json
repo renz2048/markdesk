@@ -13,7 +13,7 @@
     "test:watch": "vitest",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "smoke": "node tests/tauri/smoke.mjs",
-    "dist": "tauri build"
+    "dist": "tauri build && node scripts/rename-bundle.mjs"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "6.3.1",
