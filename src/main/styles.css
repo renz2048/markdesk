@@ -1007,6 +1007,21 @@ body {
   gap: 8px;
 }
 
+/* 导出成功的轻提示：右下角浮层，数秒后自动消失。 */
+.export-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 44px;
+  z-index: 60;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--foreground);
+  font-size: 0.9rem;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 15%);
+}
+
 @media (max-width: 720px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);

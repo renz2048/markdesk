@@ -375,6 +375,8 @@ export default function App() {
   } | null>(null);
   // 文档引用了未授权的目录外本地图片时向用户询问（打开文档时检测）。
   const [pendingLocalImages, setPendingLocalImages] = useState<string[]>([]);
+  // 导出成功的轻提示（几秒后自动消失）。
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [outlineWidth, setOutlineWidth] = useState(loadOutlineWidth);
   const [sidebarVisible, setSidebarVisible] = useState(true);
 
@@ -890,7 +892,13 @@ export default function App() {
             state.mode === "source"
               ? state.sourceText
               : serializeMarkdown(state.doc);
-          await api.exportViaPandoc(format, markdown, baseName, docDir);
+          const exported = await api.exportViaPandoc(
+            format,
+            markdown,
+            baseName,
+            docDir,
+          );
+          if (exported) setExportNotice(`已导出：${fileNameFromPath(exported)}`);
         } else if (format === "html") {
           const doc = state.mode === "source"
             ? parseMarkdown(state.sourceText)
@@ -903,6 +911,7 @@ export default function App() {
             target,
             buildExportHtml(doc, resolvedTheme === "dark" ? "dark" : "light"),
           );
+          setExportNotice(`已导出：${fileNameFromPath(target)}`);
         } else {
           const doc = state.mode === "source"
             ? parseMarkdown(state.sourceText)
@@ -911,12 +920,13 @@ export default function App() {
             doc,
             resolvedTheme === "dark" ? "dark" : "light",
           );
-          await api.exportRenderedDocument(
+          const exported = await api.exportRenderedDocument(
             format,
             html,
             `${baseName}.${format === "pdf" ? "pdf" : "png"}`,
             docDir,
           );
+          if (exported) setExportNotice(`已导出：${fileNameFromPath(exported)}`);
         }
         // 导出是只读的旁路操作：不改变活动文档的脏状态。
       } catch (error) {
@@ -1406,6 +1416,13 @@ export default function App() {
     });
   }, [api, requestFileAction]);
 
+  // 导出成功提示 4 秒后自动消失。
+  useEffect(() => {
+    if (exportNotice === null) return undefined;
+    const timer = window.setTimeout(() => setExportNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [exportNotice]);
+
   // Tauri（WebView2）聚焦时原生菜单加速键不触发，在窗口层按同一套
   // 快捷键分发菜单命令；Ctrl+W 走与原生关闭一致的确认流程。
   useEffect(() => {
@@ -1737,6 +1754,15 @@ export default function App() {
           />
         )}
       </main>
+      {exportNotice !== null ? (
+        <div
+          className="export-toast"
+          role="status"
+          data-testid="export-notice"
+        >
+          {exportNotice}
+        </div>
+      ) : null}
       {closeProtectionVisible ? (
         <CloseProtectionDialog
           busy={fileBusy}
