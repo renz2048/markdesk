@@ -183,6 +183,10 @@ pub async fn render_to_path(
     Ok(())
 }
 
+// 隐藏 WebView + 引擎原生渲染接口的导出：Windows 走 WebView2 的 CDP
+//（printToPDF / captureScreenshot）。macOS（WKWebView）与 Linux
+//（WebKitGTK）缺少对应的静默打印 API，暂不支持，返回明确错误。
+#[cfg(windows)]
 async fn run_export_webview(
     handle: &AppHandle,
     html_path: &Path,
@@ -226,6 +230,16 @@ async fn run_export_webview(
     let result = if pdf { print_to_pdf(&window) } else { screenshot(&window) };
     let _ = window.destroy();
     result
+}
+
+#[cfg(not(windows))]
+async fn run_export_webview(
+    _handle: &AppHandle,
+    _html_path: &Path,
+    _token: &str,
+    _pdf: bool,
+) -> Result<Vec<u8>, String> {
+    Err("PDF/图像导出当前仅支持 Windows，其他平台请使用 HTML 或 Pandoc 导出。".to_string())
 }
 
 #[cfg(windows)]

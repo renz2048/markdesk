@@ -9,9 +9,20 @@ import { Schema } from "prosemirror-model";
 // absolute/ 分支（需求 4.5，授权解析见主进程 resolve_resource_path）。
 const absolutePathPattern = /^(?:[a-zA-Z]:[\\/]|\\\\|\/[^\\/])/u;
 
-// markdesk-resource 协议在 WebView2 上的寻址形式（Tauri 注册的自定义
-// 协议以 http://<scheme>.localhost/ 出现，主进程按授权解析）。
-const RESOURCE_PREFIX = "http://markdesk-resource.localhost/";
+// markdesk-resource 协议的寻址形式随宿主 WebView 而异：
+// - Windows（WebView2）：http://markdesk-resource.localhost/
+// - macOS（WKWebView）/ Linux（WebKitGTK）：markdesk-resource://localhost/
+const HTTP_RESOURCE_PREFIX = "http://markdesk-resource.localhost/";
+const SCHEME_RESOURCE_PREFIX = "markdesk-resource://localhost/";
+
+function detectResourcePrefix(): string {
+  if (typeof navigator === "undefined") return HTTP_RESOURCE_PREFIX;
+  return navigator.userAgent.includes("Windows")
+    ? HTTP_RESOURCE_PREFIX
+    : SCHEME_RESOURCE_PREFIX;
+}
+
+const RESOURCE_PREFIX = detectResourcePrefix();
 
 export const resourceProtocolPrefix = RESOURCE_PREFIX;
 
@@ -27,7 +38,9 @@ export function editorImageSrc(src: string): string {
   if (
     src.length === 0 ||
     src.startsWith("/") ||
-    src.startsWith(RESOURCE_PREFIX) ||
+    src.startsWith(HTTP_RESOURCE_PREFIX) ||
+    src.startsWith(SCHEME_RESOURCE_PREFIX) ||
+    src.startsWith("markdesk-resource:") ||
     /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(src)
   ) {
     return src;
@@ -37,16 +50,18 @@ export function editorImageSrc(src: string): string {
 
 /** editorImageSrc 的逆变换：导出 HTML 时还原作者书写的路径。 */
 export function sourceImageSrc(src: string): string {
-  const absolutePrefix = `${resourceProtocolPrefix}absolute/`;
-  if (src.startsWith(absolutePrefix)) {
-    try {
-      return decodeURIComponent(src.slice(absolutePrefix.length));
-    } catch {
-      return src;
+  for (const prefix of [HTTP_RESOURCE_PREFIX, SCHEME_RESOURCE_PREFIX]) {
+    const absolutePrefix = `${prefix}absolute/`;
+    if (src.startsWith(absolutePrefix)) {
+      try {
+        return decodeURIComponent(src.slice(absolutePrefix.length));
+      } catch {
+        return src;
+      }
     }
-  }
-  if (src.startsWith(resourceProtocolPrefix)) {
-    return src.slice(resourceProtocolPrefix.length);
+    if (src.startsWith(prefix)) {
+      return src.slice(prefix.length);
+    }
   }
   return src;
 }

@@ -3,10 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- WebView2 实际生效的 CSP（与 tauri.conf.json 的 security.csp 保持一致）：
-         IPC 走 ipc:/http://ipc.localhost，受限图片协议走
-         http://markdesk-resource.localhost。 -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http://markdesk-resource.localhost https: http: data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://markdesk-resource.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
+    <!-- 实际生效的 CSP（与 tauri.conf.json 的 security.csp 保持一致）：
+         IPC 走 ipc:/http://ipc.localhost；受限图片协议在 WebView2 上是
+         http://markdesk-resource.localhost，在 WKWebView/WebKitGTK 上是
+         markdesk-resource: scheme——两种形式一并放行。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http://markdesk-resource.localhost markdesk-resource: https: http: data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://markdesk-resource.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
     <title>MarkDesk</title>
   </head>
   <body>

@@ -87,8 +87,12 @@ export function normalizeImageSrc(src: string): string {
     return value;
   }
 
-  // markdesk-resource 协议在 WebView2 上的寻址形式；路径逃逸一律拒绝。
-  if (/^http:\/\/markdesk-resource\.localhost\//iu.test(value)) {
+  // markdesk-resource 协议的两种寻址形式（WebView2 的 http 形式与
+  // WKWebView/WebKitGTK 的 scheme 形式）；路径逃逸一律拒绝。
+  if (
+    /^http:\/\/markdesk-resource\.localhost\//iu.test(value) ||
+    /^markdesk-resource:\/\/localhost\//iu.test(value)
+  ) {
     if (value.includes("/../") || value.endsWith("/..")) {
       throw new Error("Unsafe or malformed image URL");
     }

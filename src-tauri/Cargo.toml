@@ -1,6 +1,6 @@
 [package]
 name = "markdesk"
-version = "0.4.4"
+version = "0.5.0"
 description = "MarkDesk - 安全的单文件 Markdown 阅读器与编辑器"
 edition = "2021"
 
@@ -21,6 +21,9 @@ rand = "0.8"
 notify = "8"
 percent-encoding = "2"
 tokio = { version = "1", features = ["time", "process"] }
+
+# WebView2 CDP 导出仅 Windows 需要。
+[target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
 

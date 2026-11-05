@@ -126,6 +126,8 @@ npm run dist         # 打包 NSIS 安装包（src-tauri/target/release/bundle/n
 
 ## 制作安装包
 
+### Windows（本机）
+
 ```bash
 npm run dist
 ```
@@ -133,10 +135,28 @@ npm run dist
 产物：`src-tauri/target/release/bundle/nsis/MarkDesk-<版本号>-x64.exe`
 （约 4 MB，NSIS、按用户安装、支持 .md/.markdown 文件关联）。
 
+### Linux / macOS
+
+跨平台编译不可行（macOS 工具链只在 macOS 上运行，Linux 需要链接
+webkit2gtk 等系统库），两个平台的构建经 GitHub Actions 完成：
+
+- 推送 `v*` 标签（如 `git tag v0.5.0 && git push origin v0.5.0`）自动
+  构建 Windows/Linux/macOS 三平台并发布 GitHub Release
+- 也可在 Actions 页面手动触发（workflow_dispatch），产物在 Artifacts
+
+Linux 产物为 `.deb` 与 `.AppImage`；macOS 产物为 `.dmg`（当前为
+Apple Silicon 架构）。本机 Linux 构建需先安装
+`libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev
+librsvg2-dev build-essential` 等依赖。
+
+> 平台能力说明：PDF/图像导出依赖 WebView2 的 CDP，**当前仅 Windows
+> 可用**；macOS/Linux 上这两项会提示暂不支持，HTML 与 Pandoc 导出
+> 三平台一致。
+
 打包行为定义在 `src-tauri/tauri.conf.json`；应用图标源为
 `src-tauri/icons/`（可用 `npx tauri icon <png>` 重新生成）。
-修改版本号请同步编辑 `package.json` 与 `src-tauri/tauri.conf.json` 的
-`version` 字段（当前均为 0.3.0）。
+修改版本号请同步编辑 `package.json`、`src-tauri/tauri.conf.json` 与
+`src-tauri/Cargo.toml` 的版本字段（当前均为 0.5.0）。
 
 ## 安全基线
 
