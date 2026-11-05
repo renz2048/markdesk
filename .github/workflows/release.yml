@@ -62,7 +62,9 @@ jobs:
       - name: Build bundles
         shell: bash
         run: |
-          npx tauri build --bundles ${{ matrix.bundles }}
+          set -o pipefail
+          npx tauri build --bundles ${{ matrix.bundles }} 2>&1 | tee build.log \
+            || { tail -60 build.log | sed 's/^/::error::/'; exit 1; }
           # Windows 产物按仓库约定去掉 -setup 后缀。
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             node scripts/rename-bundle.mjs
