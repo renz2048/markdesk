@@ -55,7 +55,8 @@
         ],
         "name": "Markdown 文档",
         "description": "Markdown 文档",
-        "role": "Editor"
+        "role": "Editor",
+        "mimeType": "text/markdown"
       }
     ]
   }
