@@ -11,6 +11,7 @@ mod policy;
 mod service;
 mod state;
 mod theme;
+mod update;
 mod watcher;
 mod window;
 
@@ -214,6 +215,9 @@ pub fn run() {
             commands::cancel_close,
             commands::take_argv_open_path,
             commands::export_rendered_to,
+            commands::get_build_info,
+            commands::check_latest_release,
+            commands::download_update,
         ])
         .run(tauri::generate_context!())
         .expect("MarkDesk 启动失败");

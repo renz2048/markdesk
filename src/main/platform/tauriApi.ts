@@ -5,9 +5,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type {
+  BuildInfo,
   FileFingerprint,
   FileReadResult,
   FileWriteResult,
+  LatestReleaseInfo,
   MarkDeskRendererApi,
   MenuCommand,
   PandocExportTargetName,
@@ -17,6 +19,8 @@ import type {
   RecoveryDraftInput,
   RecoveryDraftSummary,
   ThemePreferenceSetting,
+  UpdateOutcome,
+  UpdateProgressEvent,
 } from "../../shared/types";
 
 /** Tauri 拖放事件载荷（文件在 WebView 中拿不到 File 对象，只有路径+坐标）。 */
@@ -197,6 +201,27 @@ export function createTauriApi(): MarkDeskRendererApi {
     },
     requestClose: () => call<void>("request_close"),
     cancelClose: () => call<void>("cancel_close"),
+    getBuildInfo: (): Promise<BuildInfo> => call("get_build_info"),
+    checkLatestRelease: (): Promise<LatestReleaseInfo> =>
+      call("check_latest_release"),
+    downloadUpdate: (url: string, assetName: string): Promise<UpdateOutcome> =>
+      call("download_update", { url, assetName }),
+    onUpdateProgress: (
+      listener: (event: UpdateProgressEvent) => void,
+    ): (() => void) => {
+      let dispose: UnlistenFn | null = null;
+      let active = true;
+      void listen<UpdateProgressEvent>("update-progress", (event) => {
+        listener(event.payload);
+      }).then((unlisten) => {
+        if (active) dispose = unlisten;
+        else unlisten();
+      });
+      return () => {
+        active = false;
+        dispose?.();
+      };
+    },
     getStartupOpenPath: () => call<string | null>("take_argv_open_path"),
     setWindowTitle: (title: string) =>
       call<void>("set_window_title", { title }),

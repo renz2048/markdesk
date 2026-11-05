@@ -35,6 +35,7 @@ import {
   resourceProtocolPrefix,
 } from "../markdown/schema";
 import { resolvePlatformApi } from "./platform/api";
+import { AboutDialog } from "./components/AboutDialog";
 import { ImageViewer, imageViewerTarget } from "./components/ImageViewer";
 import {
   EditorViewContext,
@@ -377,6 +378,7 @@ export default function App() {
   const [pendingLocalImages, setPendingLocalImages] = useState<string[]>([]);
   // 导出成功的轻提示（几秒后自动消失）。
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [aboutVisible, setAboutVisible] = useState(false);
   const [outlineWidth, setOutlineWidth] = useState(loadOutlineWidth);
   const [sidebarVisible, setSidebarVisible] = useState(true);
 
@@ -1329,6 +1331,11 @@ export default function App() {
 
   const handleMenuCommand = useCallback(
     (command: MenuCommand) => {
+      // “关于”与文件操作无关，任何状态下都可打开。
+      if (command === "about") {
+        setAboutVisible(true);
+        return;
+      }
       if (
         lifecycleRef.current.busy ||
         pendingActionRef.current ||
@@ -1778,6 +1785,9 @@ export default function App() {
           onRestore={() => void restoreRecoveryDraft(recoveryDraft)}
           onSkip={skipRecoveryDraft}
         />
+      ) : null}
+      {aboutVisible && api ? (
+        <AboutDialog api={api} onClose={() => setAboutVisible(false)} />
       ) : null}
       {fileCollision !== null ? (
         <FileCollisionDialog

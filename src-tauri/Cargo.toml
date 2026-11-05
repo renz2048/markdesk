@@ -1,6 +1,6 @@
 [package]
 name = "markdesk"
-version = "0.5.1"
+version = "0.5.2"
 description = "MarkDesk - 安全的单文件 Markdown 阅读器与编辑器"
 edition = "2021"
 
@@ -21,6 +21,8 @@ rand = "0.8"
 notify = "8"
 percent-encoding = "2"
 tokio = { version = "1", features = ["time", "process"] }
+# 在线更新：GitHub API 查询与安装包下载（rustls，无 OpenSSL 依赖）。
+ureq = { version = "2", features = ["tls", "json"] }
 
 # WebView2 CDP 导出仅 Windows 需要。
 [target.'cfg(windows)'.dependencies]

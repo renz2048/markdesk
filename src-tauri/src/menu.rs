@@ -84,6 +84,10 @@ fn mode_entries() -> Vec<Entry> {
     ]
 }
 
+fn help_entries() -> Vec<Entry> {
+    vec![item("about", "关于", None)]
+}
+
 fn push_entries<'a, R: Runtime, M: Manager<R>>(
     handle: &'a M,
     builder: SubmenuBuilder<'a, R, M>,
@@ -178,6 +182,10 @@ pub fn build(handle: &AppHandle) {
     let mode_menu = push_entries(handle, SubmenuBuilder::new(handle, "模式"), &mode_entries())
         .build()
         .expect("模式菜单创建失败");
+    // 帮助菜单固定在最右（最后加入 MenuBuilder）。
+    let help_menu = push_entries(handle, SubmenuBuilder::new(handle, "帮助"), &help_entries())
+        .build()
+        .expect("帮助菜单创建失败");
 
     let theme_light = CheckMenuItem::with_id(handle, "theme-light", "浅色", true, theme == ThemePreference::Light, None::<&str>)
         .expect("主题项创建失败");
@@ -199,6 +207,7 @@ pub fn build(handle: &AppHandle) {
         .item(&format_menu)
         .item(&mode_menu)
         .item(&theme_menu)
+        .item(&help_menu)
         .build()
         .expect("应用菜单创建失败");
 

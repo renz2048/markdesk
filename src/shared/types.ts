@@ -90,7 +90,8 @@ export type MenuCommand =
   | "paragraph-ordered-list"
   | "paragraph-task-list"
   | "paragraph-horizontal-rule"
-  | "paragraph-table";
+  | "paragraph-table"
+  | "about";
 
 export interface FileChangedEvent {
   path: string;
@@ -176,6 +177,38 @@ export interface PickedImageAsset {
   bytes: ArrayBuffer;
 }
 
+/** “关于”对话框展示的构建信息（构建期注入 git 提交/日期与依赖版本）。 */
+export interface DependencyVersion {
+  name: string;
+  version: string;
+}
+
+export interface BuildInfo {
+  version: string;
+  commit: string;
+  date: string;
+  dependencies: DependencyVersion[];
+}
+
+/** GitHub Release 查询结果（已按当前平台/架构匹配安装包）。 */
+export interface LatestReleaseInfo {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  assetName: string;
+  assetUrl: string;
+  assetSize: number;
+  releaseUrl: string;
+}
+
+export interface UpdateProgressEvent {
+  downloaded: number;
+  total: number;
+}
+
+/** 下载完成后的处理方式（渲染端据此提示）。 */
+export type UpdateOutcome = "installer-launched" | "self-replaced" | "opened";
+
 export type ExportRenderFormat = "pdf" | "png";
 
 export type ThemePreferenceSetting = "light" | "dark" | "system";
@@ -254,6 +287,13 @@ export interface MarkDeskRendererApi {
     paths: string[];
     position: { x: number; y: number };
   }) => void): () => void;
+  /** “关于”对话框：构建信息、更新检查与下载安装。 */
+  getBuildInfo?(): Promise<BuildInfo>;
+  checkLatestRelease?(): Promise<LatestReleaseInfo>;
+  downloadUpdate?(url: string, assetName: string): Promise<UpdateOutcome>;
+  onUpdateProgress?(
+    listener: (event: UpdateProgressEvent) => void,
+  ): () => void;
 }
 
 declare global {

@@ -1048,3 +1048,153 @@ body {
     gap: 4px;
   }
 }
+
+/* “关于”对话框：应用名 + 构建/依赖信息 + 在线更新。 */
+.about-dialog {
+  width: min(420px, 100%);
+  max-height: min(560px, calc(100vh - 48px));
+  overflow-y: auto;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--foreground);
+  box-shadow: 0 20px 45px rgb(0 0 0 / 22%);
+}
+
+.about-dialog h2.about-name {
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: 0.02em;
+}
+
+.about-dialog .about-tagline {
+  margin: 4px 0 16px;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
+
+.about-meta {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 14px;
+}
+
+.about-meta-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.about-meta-row dt {
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+}
+
+.about-meta-row dd {
+  margin: 0;
+  font-family: var(--mono-font, monospace);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.about-deps h3 {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  color: var(--muted-foreground);
+  font-weight: 600;
+}
+
+.about-deps ul {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+
+.about-deps li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.82rem;
+}
+
+.about-deps li span:last-child {
+  color: var(--muted-foreground);
+  font-family: var(--mono-font, monospace);
+}
+
+.about-update {
+  margin: 0 0 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.about-update p {
+  margin: 0 0 8px;
+  color: var(--muted-foreground);
+  font-size: 0.88rem;
+}
+
+.about-error {
+  color: var(--destructive, #b3261e) !important;
+}
+
+/* 更新按钮：与 .dialog-actions 的按钮同款式（此处不在 dialog-actions 内）。 */
+.about-update button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+.about-update button.primary-dialog-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.about-update button.primary-dialog-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.about-update button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.about-progress p {
+  margin: 0 0 6px;
+}
+
+.about-progress progress {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: none;
+  background: var(--surface-muted);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.about-progress progress::-webkit-progress-bar {
+  background: var(--surface-muted);
+  border-radius: 3px;
+}
+
+.about-progress progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.about-progress .about-progress-detail {
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  font-family: var(--mono-font, monospace);
+}

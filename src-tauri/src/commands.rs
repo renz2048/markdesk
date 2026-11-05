@@ -6,11 +6,70 @@ use crate::service::{self, ServiceError};
 use crate::state::{
     draft_key_for_path, App, Inner, RecoveryDraft, RecoveryDraftSummary, RecentFileStatus,
 };
+use crate::update;
 use crate::watcher;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+
+/// “关于”对话框展示的构建信息（构建期由 build.rs 注入）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyVersion {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    pub version: String,
+    pub commit: String,
+    pub date: String,
+    pub dependencies: Vec<DependencyVersion>,
+}
+
+#[tauri::command]
+pub fn get_build_info() -> BuildInfo {
+    BuildInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: env!("MARKDESK_BUILD_COMMIT").to_string(),
+        date: env!("MARKDESK_BUILD_DATE").to_string(),
+        dependencies: vec![
+            ("Tauri", env!("MARKDESK_DEP_TAURI")),
+            ("wry", env!("MARKDESK_DEP_WRY")),
+            ("tao", env!("MARKDESK_DEP_TAO")),
+            ("notify", env!("MARKDESK_DEP_NOTIFY")),
+        ]
+        .into_iter()
+        .map(|(name, version)| DependencyVersion {
+            name: name.to_string(),
+            version: version.to_string(),
+        })
+        .collect(),
+    }
+}
+
+#[tauri::command]
+pub async fn check_latest_release() -> Result<update::ReleaseInfo, IpcError> {
+    tauri::async_runtime::spawn_blocking(update::fetch_latest_release)
+        .await
+        .map_err(|_| IpcError::from(ServiceError::new("update-network", "更新检查失败。")))?
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub async fn download_update(
+    handle: AppHandle,
+    url: String,
+    asset_name: String,
+) -> Result<update::UpdateOutcome, IpcError> {
+    tauri::async_runtime::spawn_blocking(move || update::download_and_install(handle, &url, &asset_name))
+        .await
+        .map_err(|_| IpcError::from(ServiceError::new("update-network", "下载任务启动失败。")))?
+        .map_err(IpcError::from)
+}
 
 #[derive(Serialize, Clone)]
 pub struct IpcError {
