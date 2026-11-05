@@ -69,6 +69,8 @@ fn uses_win32(directory: &str) -> bool {
 }
 
 /// 规范化一个已解析的路径段序列：消解 `.` 与 `..`，统一分隔符。
+/// base 为空（POSIX 根）、盘符前缀（“c:”）或 UNC 根（“\\\\”，不可
+/// 裁剪成单分隔符，否则 \\server\share 会变成 \server\share）。
 fn normalize_parts(base: &str, parts: Vec<String>, separator: char, lower: bool) -> String {
     let mut stack: Vec<String> = Vec::new();
     for part in parts {
@@ -82,11 +84,16 @@ fn normalize_parts(base: &str, parts: Vec<String>, separator: char, lower: bool)
         stack.push(part);
     }
     let joined = stack.join(&separator.to_string());
-    let prefix = base.trim_end_matches(['/', '\\']);
-    let mut result = if prefix.is_empty() {
-        format!("{}{}", separator, joined)
+    let mut result = if base == "\\\\" {
+        // UNC 根：保留双反斜杠前缀。
+        format!(r"\\{joined}")
     } else {
-        format!("{}{}{}", prefix, separator, joined)
+        let prefix = base.trim_end_matches(['/', '\\']);
+        if prefix.is_empty() {
+            format!("{}{}", separator, joined)
+        } else {
+            format!("{}{}{}", prefix, separator, joined)
+        }
     };
     if lower {
         result = result.to_lowercase();
@@ -157,12 +164,21 @@ fn resolve_against_posix_rooted(path: &str) -> String {
 /// 仅规范化。Windows 的 \\?\ 前缀剥除。
 pub fn canonicalize(path: &str) -> String {
     match std::fs::canonicalize(Path::new(path)) {
-        Ok(real) => {
-            let text = real.to_string_lossy().to_string();
-            let stripped = text.trim_start_matches(r"\\?\").to_string();
-            normalize_unresolved(&stripped)
-        }
+        Ok(real) => normalize_unresolved(&strip_verbatim(&real.to_string_lossy())),
         Err(_) => normalize_unresolved(path),
+    }
+}
+
+/// Windows 的 canonicalize 返回 verbatim 形态：盘符 → \\?\C:\…，UNC →
+/// \\?\UNC\server\share\…。UNC 必须还原成 \\server\share\… 再规范化，
+/// 否则剥掉 \\?\ 后剩余的 “UNC\server\…” 不再以 \\ 开头，会被当作
+/// POSIX 路径解析，导致 WSL（\\wsl.localhost\…）等网络路径被
+/// is_markdown_path 误拒。
+fn strip_verbatim(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        text.strip_prefix(r"\\?\").unwrap_or(text).to_string()
     }
 }
 
@@ -284,6 +300,45 @@ mod tests {
         assert_eq!(
             normalize_unresolved(r#"c:\Users\Notes\a.md"#),
             r#"c:\users\notes\a.md"#
+        );
+    }
+
+    #[test]
+    fn strips_verbatim_prefixes_from_canonicalize() {
+        // 盘符 verbatim 形态。
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\Notes\a.md"), r"C:\Users\Notes\a.md");
+        // UNC verbatim 形态（WSL）：必须还原前导 \\，否则不再是绝对路径。
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\wsl.localhost\Ubuntu-26.04\home\renzheng\a.md"),
+            r"\\wsl.localhost\Ubuntu-26.04\home\renzheng\a.md"
+        );
+        // 非 verbatim 输入原样返回。
+        assert_eq!(strip_verbatim(r"\\wsl$\Ubuntu-26.04\home\a.md"), r"\\wsl$\Ubuntu-26.04\home\a.md");
+    }
+
+    #[test]
+    fn accepts_wsl_unc_markdown_path() {
+        // 还原后的 WSL UNC 路径是合法的 win32 绝对路径（且保留大小写）。
+        let restored = strip_verbatim(
+            r"\\?\UNC\wsl.localhost\Ubuntu-26.04\home\renzheng\plans\2026-11-05-elb-dp-l3.md",
+        );
+        assert_eq!(
+            normalize_unresolved(&restored),
+            r"\\wsl.localhost\Ubuntu-26.04\home\renzheng\plans\2026-11-05-elb-dp-l3.md"
+        );
+        assert!(is_markdown_path(&restored));
+    }
+
+    #[test]
+    fn normalizes_plain_unc_inputs() {
+        // 未走 canonicalize 的 UNC 输入（正/反斜杠两种形态）也要保住双前缀。
+        assert_eq!(
+            normalize_unresolved(r"\\wsl.localhost\Ubuntu-26.04\home\renzheng\a.md"),
+            r"\\wsl.localhost\Ubuntu-26.04\home\renzheng\a.md"
+        );
+        assert_eq!(
+            normalize_unresolved("//wsl.localhost/Ubuntu-26.04/home/renzheng/../renzheng/a.md"),
+            r"\\wsl.localhost\Ubuntu-26.04\home\renzheng\a.md"
         );
     }
 }
