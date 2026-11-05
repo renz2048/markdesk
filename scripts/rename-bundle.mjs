@@ -1,6 +1,6 @@
-// 规范 NSIS 产物名：去掉 Tauri 固定追加的 -setup 后缀，并把下划线
-// 换成连字符，与历史命名一致：
-// MarkDesk_0.4.0_x64-setup.exe → MarkDesk-0.4.0-x64.exe
+// 规范 NSIS 产物名：去掉 Tauri 固定追加的 -setup 后缀，
+// 保留 Tauri 默认的下划线风格（与 deb/AppImage/dmg 一致）：
+// MarkDesk_0.5.0_x64-setup.exe → MarkDesk_0.5.0_x64.exe
 import { readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -23,7 +23,7 @@ for (const name of candidates.slice(1)) {
     current = name;
   }
 }
-const target = current.replace("-setup.exe", ".exe").replace(/_/gu, "-");
+const target = current.replace("-setup.exe", ".exe");
 if (current === target) {
   console.log(`already named: ${target}`);
 } else {
