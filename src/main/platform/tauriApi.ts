@@ -201,6 +201,30 @@ export function createTauriApi(): MarkDeskRendererApi {
     },
     requestClose: () => call<void>("request_close"),
     cancelClose: () => call<void>("cancel_close"),
+    getSystemTheme: async (): Promise<"light" | "dark"> => {
+      // Tauri 主进程已把 WindowEvent::ThemeChanged 自动广播为
+      // tauri://theme-changed；初值用原生窗口主题查询。
+      const theme = await getCurrentWebviewWindow().theme();
+      return theme === "dark" ? "dark" : "light";
+    },
+    onSystemThemeChanged: (
+      listener: (theme: "light" | "dark") => void,
+    ): (() => void) => {
+      let dispose: UnlistenFn | null = null;
+      let active = true;
+      void getCurrentWebviewWindow()
+        .listen<string>("tauri://theme-changed", (event) => {
+          listener(event.payload === "dark" ? "dark" : "light");
+        })
+        .then((unlisten) => {
+          if (active) dispose = unlisten;
+          else unlisten();
+        });
+      return () => {
+        active = false;
+        dispose?.();
+      };
+    },
     getBuildInfo: (): Promise<BuildInfo> => call("get_build_info"),
     checkLatestRelease: (): Promise<LatestReleaseInfo> =>
       call("check_latest_release"),

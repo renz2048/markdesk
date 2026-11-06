@@ -541,13 +541,36 @@ export default function App() {
     [api, refreshAbsoluteImages],
   );
 
+  // “跟随系统”的主题来源：优先原生窗口主题（Tauri 会把
+  // WindowEvent::ThemeChanged 广播为 tauri://theme-changed）。WebView2 的
+  // prefers-color-scheme 在 Windows 上可能过期或不一致（实测切换系统
+  // 主题后新查询仍返回旧值），仅作无 api 环境（单测）的回退。
   useLayoutEffect(() => {
+    if (api?.getSystemTheme) {
+      let cancelled = false;
+      void api
+        .getSystemTheme()
+        .then((theme) => {
+          if (!cancelled) setSystemPrefersDark(theme === "dark");
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const updateSystemTheme = () => setSystemPrefersDark(mediaQuery.matches);
     updateSystemTheme();
     mediaQuery.addEventListener("change", updateSystemTheme);
     return () => mediaQuery.removeEventListener("change", updateSystemTheme);
-  }, []);
+  }, [api]);
+
+  useEffect(() => {
+    if (!api?.onSystemThemeChanged) return;
+    return api.onSystemThemeChanged((theme) => {
+      setSystemPrefersDark(theme === "dark");
+    });
+  }, [api]);
 
   const resolvedTheme = themePreference === "system"
     ? systemPrefersDark
@@ -556,10 +579,21 @@ export default function App() {
     : themePreference;
 
   // 主题选择移入原生菜单（单选状态），渲染端变更后同步主进程。
+  // 切回“跟随系统”时主进程 set_theme(None) 后窗口主题即系统主题，
+  // 此刻重取一次，避免强制主题期间 ThemeChanged 带来的脏值。
   useEffect(() => {
-    void api?.setThemePreference(themePreference).catch(() => {
-      // 菜单勾选状态同步失败不影响实际主题生效。
-    });
+    if (!api) return;
+    const sync = api.setThemePreference(themePreference);
+    if (themePreference !== "system") {
+      void sync.catch(() => {});
+      return;
+    }
+    void sync
+      .then(() => api.getSystemTheme?.())
+      .then((theme) => {
+        if (theme) setSystemPrefersDark(theme === "dark");
+      })
+      .catch(() => {});
   }, [api, themePreference]);
 
   useLayoutEffect(() => {
@@ -911,17 +945,16 @@ export default function App() {
           if (!target) return;
           await api.exportHtml(
             target,
-            buildExportHtml(doc, resolvedTheme === "dark" ? "dark" : "light"),
+            // 导出固定浅色：文档用于打印/分享，不跟随应用内主题。
+            buildExportHtml(doc, "light"),
           );
           setExportNotice(`已导出：${fileNameFromPath(target)}`);
         } else {
           const doc = state.mode === "source"
             ? parseMarkdown(state.sourceText)
             : state.doc;
-          const html = buildExportHtml(
-            doc,
-            resolvedTheme === "dark" ? "dark" : "light",
-          );
+          // 导出固定浅色：PDF/PNG 用于打印/分享，不跟随应用内主题。
+          const html = buildExportHtml(doc, "light");
           const exported = await api.exportRenderedDocument(
             format,
             html,
@@ -938,7 +971,7 @@ export default function App() {
         setFileBusy(false);
       }
     },
-    [api, resolvedTheme],
+    [api],
   );
 
   // 拖入本地图片（需求 4.5）：WebView 拿不到拖放文件的 File 对象，

@@ -294,6 +294,14 @@ export interface MarkDeskRendererApi {
   onUpdateProgress?(
     listener: (event: UpdateProgressEvent) => void,
   ): () => void;
+  /**
+   * 原生窗口报告的系统主题（“跟随系统”的权威来源）。WebView2 的
+   * prefers-color-scheme 可能过期或不一致，不能作为唯一依据。
+   */
+  getSystemTheme?(): Promise<"light" | "dark">;
+  onSystemThemeChanged?(
+    listener: (theme: "light" | "dark") => void,
+  ): () => void;
 }
 
 declare global {
