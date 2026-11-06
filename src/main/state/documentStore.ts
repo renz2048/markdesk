@@ -107,7 +107,8 @@ export const useDocumentStore = create<DocumentStoreState>((set) => ({
   sessionKey: "session-0",
   sessionGeneration: 0,
   editorEngaged: false,
-  themePreference: "system",
+  // 默认浅色；用户选择经主进程持久化，启动时回灌（App 挂载阶段）。
+  themePreference: "light",
   setDocument: (doc, dirty = true) =>
     set((state) => (state.mode === "source" ? {} : { doc, dirty })),
   setMode: (mode) =>

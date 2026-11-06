@@ -210,6 +210,7 @@ pub fn run() {
             commands::export_rendered,
             commands::export_pandoc,
             commands::set_theme_preference,
+            commands::get_theme_preference,
             commands::set_window_title,
             commands::request_close,
             commands::cancel_close,

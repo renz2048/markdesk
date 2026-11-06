@@ -302,6 +302,8 @@ export interface MarkDeskRendererApi {
   onSystemThemeChanged?(
     listener: (theme: "light" | "dark") => void,
   ): () => void;
+  /** 拉取持久化的主题偏好（无记忆时为主进程默认“浅色”）。 */
+  getThemePreference?(): Promise<ThemePreferenceSetting>;
 }
 
 declare global {

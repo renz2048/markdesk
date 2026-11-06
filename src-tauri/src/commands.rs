@@ -500,6 +500,11 @@ pub async fn export_pandoc(
 }
 
 #[tauri::command]
+pub fn get_theme_preference(handle: AppHandle) -> CommandResult<String> {
+    Ok(read_inner(&handle, |inner| inner.theme.as_str().to_string()))
+}
+
+#[tauri::command]
 pub fn set_theme_preference(handle: AppHandle, theme: String) -> CommandResult<()> {
     let parsed = crate::state::ThemePreference::parse(&theme)
         .ok_or_else(|| IpcError::invalid_argument("主题设置无效。"))?;

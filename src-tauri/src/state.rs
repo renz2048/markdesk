@@ -46,10 +46,11 @@ pub struct Fingerprint {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemePreference {
+    // 无记忆时默认浅色；用户选择过则以 theme.json 为准。
     #[default]
-    System,
     Light,
     Dark,
+    System,
 }
 
 impl ThemePreference {
@@ -114,7 +115,8 @@ impl Default for Inner {
             recent: Vec::new(),
             drafts: Vec::new(),
             granted_images: Vec::new(),
-            theme: ThemePreference::System,
+            // 默认浅色（与枚举 #[default] 一致；用户选择经 theme.json 覆盖）。
+            theme: ThemePreference::Light,
             pandoc_available: None,
             export_docs: HashMap::new(),
             closing_windows: HashSet::new(),

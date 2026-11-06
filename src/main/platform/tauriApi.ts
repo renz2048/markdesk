@@ -93,6 +93,10 @@ export function createTauriApi(): MarkDeskRendererApi {
       }),
     setThemePreference: (theme: ThemePreferenceSetting) =>
       call<void>("set_theme_preference", { theme }),
+    getThemePreference: async (): Promise<ThemePreferenceSetting> => {
+      const value = await call<string>("get_theme_preference");
+      return value === "dark" || value === "system" ? value : "light";
+    },
     exportViaPandoc: (target: PandocExportTargetName, markdown, defaultName, docDir) =>
       call<string | null>("export_pandoc", {
         target,

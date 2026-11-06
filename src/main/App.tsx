@@ -352,6 +352,8 @@ export default function App() {
   const [sourceCursorPosition, setSourceCursorPosition] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [systemPrefersDark, setSystemPrefersDark] = useState(false);
+  /** 启动时是否已从主进程回灌持久化的主题偏好。 */
+  const [themeSynced, setThemeSynced] = useState(false);
   const [fileFingerprint, setFileFingerprint] =
     useState<FileFingerprint | null>(null);
   const [newlinePreference, setNewlinePreference] =
@@ -578,11 +580,37 @@ export default function App() {
       : "light"
     : themePreference;
 
-  // 主题选择移入原生菜单（单选状态），渲染端变更后同步主进程。
+  // 主题选择移入原生菜单（单选状态）。启动时先回灌主进程持久化的
+  // 偏好，回灌完成前不向主进程同步——否则会把 store 默认值写进
+  // theme.json，覆盖用户上一次的选择（此前版本即有此缺陷）。
   // 切回“跟随系统”时主进程 set_theme(None) 后窗口主题即系统主题，
   // 此刻重取一次，避免强制主题期间 ThemeChanged 带来的脏值。
   useEffect(() => {
-    if (!api) return;
+    if (!api?.getThemePreference) {
+      setThemeSynced(true);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getThemePreference()
+      .then((stored) => {
+        if (!cancelled && stored !== themePreference) {
+          setThemePreference(stored);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setThemeSynced(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // 仅在挂载时回灌一次；themePreference 变化不重拉。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!api || !themeSynced) return;
     const sync = api.setThemePreference(themePreference);
     if (themePreference !== "system") {
       void sync.catch(() => {});
@@ -594,7 +622,7 @@ export default function App() {
         if (theme) setSystemPrefersDark(theme === "dark");
       })
       .catch(() => {});
-  }, [api, themePreference]);
+  }, [api, themePreference, themeSynced, setThemePreference]);
 
   useLayoutEffect(() => {
     const root = document.documentElement;
