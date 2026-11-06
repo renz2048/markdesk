@@ -144,8 +144,11 @@ webkit2gtk 等系统库），两个平台的构建经 GitHub Actions 完成：
   构建 Windows/Linux/macOS 三平台并发布 GitHub Release
 - 也可在 Actions 页面手动触发（workflow_dispatch），产物在 Artifacts
 
-Linux 产物为 `.deb` 与 `.AppImage`；macOS 产物为 `.dmg`（当前为
-Apple Silicon 架构）。本机 Linux 构建需先安装
+Linux 产物为 `.deb`、`.rpm` 与 `.AppImage`（deb/rpm 走系统包管理器，
+AppImage 自包含、约 80 MB，覆盖 deb/rpm 之外的发行版，也是 Linux 上
+唯一支持应用内自更新的格式）；macOS 产物为 `.dmg`，Apple Silicon
+（`_aarch64.dmg`）与 Intel（`_x64.dmg`，CI 交叉编译）双架构。本机
+Linux 构建需先安装
 `libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev
 librsvg2-dev build-essential` 等依赖。
 

@@ -75,8 +75,9 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 
 /// 产物命名与 release.yml / scripts/rename-bundle.mjs 对应：
 /// NSIS `…_<arch>.exe` 用 x64/arm64；deb 与 AppImage 用 amd64/arm64；
-/// dmg 用 x64/aarch64。
-pub fn asset_suffix(os: &str, arch: &str, appimage: bool) -> Option<String> {
+/// dmg 用 x64/aarch64；rpm 是 tauri-bundler 的连字符风格
+/// `…-<版本>-1.<arch>.rpm`（x86_64/aarch64，见其 rpm.rs）。
+pub fn asset_suffix(os: &str, arch: &str, package: &str) -> Option<String> {
     if os == "windows" {
         match arch {
             "x86_64" => Some("_x64.exe".into()),
@@ -90,15 +91,33 @@ pub fn asset_suffix(os: &str, arch: &str, appimage: bool) -> Option<String> {
             _ => None,
         }
     } else if os == "linux" {
-        let ext = if appimage { ".AppImage" } else { ".deb" };
-        match arch {
-            "x86_64" => Some(format!("_amd64{ext}")),
-            "aarch64" => Some(format!("_arm64{ext}")),
+        match (package, arch) {
+            ("appimage", "x86_64") => Some("_amd64.AppImage".into()),
+            ("appimage", "aarch64") => Some("_arm64.AppImage".into()),
+            ("deb", "x86_64") => Some("_amd64.deb".into()),
+            ("deb", "aarch64") => Some("_arm64.deb".into()),
+            ("rpm", "x86_64") => Some(".x86_64.rpm".into()),
+            ("rpm", "aarch64") => Some(".aarch64.rpm".into()),
             _ => None,
         }
     } else {
         None
     }
+}
+
+/// Linux 下应下载的包格式：AppImage 内运行时自替换；其余按发行版
+/// 家族从 /etc/os-release 判断 rpm（fedora/rhel/suse 系）或 deb。
+fn linux_package_style() -> &'static str {
+    if let Ok(text) = std::fs::read_to_string("/etc/os-release") {
+        let lower = text.to_lowercase();
+        const RPM_FAMILIES: [&str; 7] = [
+            "fedora", "rhel", "centos", "rocky", "almalinux", "suse", "opensuse",
+        ];
+        if RPM_FAMILIES.iter().any(|family| lower.contains(family)) {
+            return "rpm";
+        }
+    }
+    "deb"
 }
 
 fn pick_asset<'a>(
@@ -144,17 +163,22 @@ pub fn fetch_latest_release() -> Result<ReleaseInfo, ServiceError> {
         .and_then(|v| v.as_array())
         .unwrap_or(&empty);
 
-    let suffix = asset_suffix(
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        std::env::var("APPIMAGE").is_ok(),
-    )
-    .ok_or_else(|| {
-        ServiceError::new(
-            "update-unsupported",
-            "当前平台或架构没有对应的发布产物。",
-        )
-    })?;
+    let package = if std::env::consts::OS == "linux" {
+        if std::env::var("APPIMAGE").is_ok() {
+            "appimage"
+        } else {
+            linux_package_style()
+        }
+    } else {
+        ""
+    };
+    let suffix = asset_suffix(std::env::consts::OS, std::env::consts::ARCH, package)
+        .ok_or_else(|| {
+            ServiceError::new(
+                "update-unsupported",
+                "当前平台或架构没有对应的发布产物。",
+            )
+        })?;
     let (name, url, size) = pick_asset(assets, &suffix).ok_or_else(|| {
         ServiceError::new(
             "update-no-asset",
@@ -321,15 +345,46 @@ mod tests {
 
     #[test]
     fn maps_asset_suffixes_per_platform_and_arch() {
-        assert_eq!(asset_suffix("windows", "x86_64", false), Some("_x64.exe".into()));
-        assert_eq!(asset_suffix("windows", "aarch64", false), Some("_arm64.exe".into()));
-        assert_eq!(asset_suffix("macos", "x86_64", false), Some("_x64.dmg".into()));
-        assert_eq!(asset_suffix("macos", "aarch64", false), Some("_aarch64.dmg".into()));
-        assert_eq!(asset_suffix("linux", "x86_64", true), Some("_amd64.AppImage".into()));
-        assert_eq!(asset_suffix("linux", "x86_64", false), Some("_amd64.deb".into()));
-        assert_eq!(asset_suffix("linux", "aarch64", false), Some("_arm64.deb".into()));
-        assert_eq!(asset_suffix("plan9", "x86_64", false), None);
-        assert_eq!(asset_suffix("windows", "riscv64", false), None);
+        assert_eq!(asset_suffix("windows", "x86_64", ""), Some("_x64.exe".into()));
+        assert_eq!(asset_suffix("windows", "aarch64", ""), Some("_arm64.exe".into()));
+        assert_eq!(asset_suffix("macos", "x86_64", ""), Some("_x64.dmg".into()));
+        assert_eq!(asset_suffix("macos", "aarch64", ""), Some("_aarch64.dmg".into()));
+        assert_eq!(
+            asset_suffix("linux", "x86_64", "appimage"),
+            Some("_amd64.AppImage".into())
+        );
+        assert_eq!(
+            asset_suffix("linux", "x86_64", "deb"),
+            Some("_amd64.deb".into())
+        );
+        assert_eq!(
+            asset_suffix("linux", "aarch64", "deb"),
+            Some("_arm64.deb".into())
+        );
+        // rpm 是 tauri-bundler 的连字符风格，arch 用 rpm 惯例。
+        assert_eq!(
+            asset_suffix("linux", "x86_64", "rpm"),
+            Some(".x86_64.rpm".into())
+        );
+        assert_eq!(
+            asset_suffix("linux", "aarch64", "rpm"),
+            Some(".aarch64.rpm".into())
+        );
+        assert_eq!(asset_suffix("plan9", "x86_64", ""), None);
+        assert_eq!(asset_suffix("windows", "riscv64", ""), None);
+    }
+
+    #[test]
+    fn picks_rpm_asset_from_fedora_style_names() {
+        let assets = serde_json::json!([
+            { "name": "MarkDesk-0.6.0-1.x86_64.rpm", "browser_download_url": "https://x/rpm", "size": 1 },
+            { "name": "MarkDesk_0.6.0_amd64.deb", "browser_download_url": "https://x/deb", "size": 2 },
+        ]);
+        let array = assets.as_array().unwrap();
+        assert_eq!(
+            pick_asset(array, ".x86_64.rpm"),
+            Some(("MarkDesk-0.6.0-1.x86_64.rpm", "https://x/rpm", 1))
+        );
     }
 
     #[test]
