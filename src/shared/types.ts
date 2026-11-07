@@ -91,6 +91,10 @@ export type MenuCommand =
   | "paragraph-task-list"
   | "paragraph-horizontal-rule"
   | "paragraph-table"
+  | "table-add-row"
+  | "table-add-column"
+  | "table-delete-row"
+  | "table-delete-column"
   | "about";
 
 export interface FileChangedEvent {

@@ -27,6 +27,12 @@ import {
   toggleOrderedList,
   toggleTaskList,
 } from "./editor/commands";
+import {
+  deleteTableColumn,
+  deleteTableRow,
+  insertTableColumnRight,
+  insertTableRowBelow,
+} from "./editor/tableEditing";
 import { parseMarkdown } from "../markdown/parser";
 import { serializeMarkdown } from "../markdown/serializer";
 import {
@@ -175,6 +181,11 @@ const menuFormattingCommands: Partial<Record<MenuCommand, Command>> = {
   "paragraph-task-list": toggleTaskList(),
   "paragraph-horizontal-rule": insertHorizontalRule(),
   "paragraph-table": insertTable(),
+  // 表格编辑命令仅在光标位于表格内时生效（命令内部自行判定）。
+  "table-add-row": insertTableRowBelow(),
+  "table-add-column": insertTableColumnRight(),
+  "table-delete-row": deleteTableRow(),
+  "table-delete-column": deleteTableColumn(),
 };
 
 // Pandoc 导出目标（主进程转换；未安装 Pandoc 时报错提示）。

@@ -65,6 +65,17 @@ fn paragraph_entries() -> Vec<Entry> {
     ]
 }
 
+/// 表格编辑子菜单：仅在所见即所得模式且光标位于表格内时生效
+/// （渲染端命令自行判定，否则静默无操作）。
+fn table_edit_entries() -> Vec<Entry> {
+    vec![
+        item("table-add-row", "添加行", None),
+        item("table-add-column", "添加列", None),
+        item("table-delete-row", "删除行", None),
+        item("table-delete-column", "删除列", None),
+    ]
+}
+
 fn format_entries() -> Vec<Entry> {
     vec![
         item("format-bold", "加粗", Some("CmdOrCtrl+B")),
@@ -173,7 +184,12 @@ pub fn build(handle: &AppHandle) {
         .build()
         .expect("编辑菜单创建失败");
 
+    let table_menu = push_entries(handle, SubmenuBuilder::new(handle, "表格编辑"), &table_edit_entries())
+        .build()
+        .expect("表格编辑子菜单创建失败");
     let paragraph_menu = push_entries(handle, SubmenuBuilder::new(handle, "段落"), &paragraph_entries())
+        .separator()
+        .item(&table_menu)
         .build()
         .expect("段落菜单创建失败");
     let format_menu = push_entries(handle, SubmenuBuilder::new(handle, "格式"), &format_entries())

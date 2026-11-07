@@ -46,7 +46,8 @@ ProseMirror + CodeMirror 6**）。界面运行在系统 WebView（Windows 为 We
 - **文件**：新建 Ctrl+N、新窗口 Ctrl+Shift+N、打开 Ctrl+O、保存 Ctrl+S、
   另存为 Ctrl+Shift+S、导出（HTML / PDF / 图像）、最近打开、关闭 Ctrl+W
 - **段落**：段落 Ctrl+0（标题切回普通段落）、一级～六级标题 Ctrl+1~6、
-  提升/降低标题级别 Ctrl+=/-、表格 Ctrl+T、
+  提升/降低标题级别 Ctrl+=/-、表格 Ctrl+T、表格编辑（添加/删除行列，
+  光标在表格内时生效）、
   代码块 Ctrl+Shift+K、引用块 Ctrl+Shift+Q、有序/无序列表 Ctrl+Shift+O/U、
   任务列表、水平分割线 Ctrl+Shift+-
 - **格式**：加粗 Ctrl+B、斜体 Ctrl+I、删除线 Ctrl+Shift+X、代码 Ctrl+Shift+\`、
@@ -72,6 +73,8 @@ ProseMirror + CodeMirror 6**）。界面运行在系统 WebView（Windows 为 We
   Tab/Shift-Tab 缩进层级；`# `/`> `/```` ``` ````/`---`
   采用缓冲式确认（标记浅色预览、标题文字加粗，回车后正式转换）；
   `**x**`、`*x*`、`` `x` ``、`~~x~~`、`[x](url)` 闭合即应用样式；Ctrl+K 编辑链接；
+  表格内 Tab/Shift-Tab 在单元格间移动、末格 Tab 或末行回车追加行，
+  段落菜单「表格编辑」可添加/删除行列（单元格内不允许换行，回车只移动或扩行）；
   粘贴图片自动存入文档目录 `assets/`；从文件夹拖入图片：目录内转相对路径、
   目录外用绝对路径
 - **源码**：CodeMirror 6 纯文本编辑

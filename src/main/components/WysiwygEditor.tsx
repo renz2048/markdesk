@@ -12,6 +12,7 @@ import { formattingKeymap } from "../editor/commands";
 import { selectedLinkHref } from "../editor/commands";
 import { markdownInputRules } from "../editor/inputRules";
 import { listEditingPlugin } from "../editor/listEditing";
+import { tableEditingPlugin } from "../editor/tableEditing";
 import { pendingSyntaxPlugin } from "../editor/pendingSyntax";
 import { SetEditorSelectionContext, SetEditorViewContext } from "./EditorContexts";
 import { LinkPopover, type LinkDraft } from "./LinkPopover";
@@ -115,6 +116,10 @@ export function createEditorPlugins(
     // 必须在 pendingSyntax 之后（块级语法回车优先确认）、base keymap
     // 之前（先于普通 splitBlock）。
     listEditingPlugin(),
+    // 表格编辑：Tab/Shift-Tab 单元格间移动、末格回车/Tab 追加行。
+    // 单元格不是列表项也不是段落，前面的插件都会放行；必须在 base
+    // keymap 之前拦下回车（单元格内不允许硬换行）。
+    tableEditingPlugin(),
     keymap(baseKeymap),
     // 列表与行内样式即时转换：“- ”、“1. ” 立即成表，
     // **x**、*x*、`x`、~~x~~、[x](url) 闭合即应用。
