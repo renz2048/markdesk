@@ -154,9 +154,14 @@ function tableCellMarkdown(cell: Node): string {
     cell.content,
   );
   if (!paragraph) return "";
+  // serialize 会用 renderContent 遍历传入节点的子节点；直接传段落会让
+  // 文本节点走裸 text 处理器，静默丢失行内标记。包一层 doc 后段落才会
+  // 经由 paragraph 处理器的 renderInline 正常输出标记。
+  const doc = markdownSchema.nodes.doc.createAndFill({}, paragraph);
+  if (!doc) return "";
 
   return markdownSerializer
-    .serialize(paragraph)
+    .serialize(doc)
     .replace(/\n$/, "");
 }
 

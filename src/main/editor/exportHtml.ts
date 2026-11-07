@@ -8,7 +8,10 @@ const allowedTags = [
   "table", "tbody", "td", "th", "thead", "tr", "ul", "a",
 ];
 
-const allowedAttributes = ["href", "title", "src", "alt", "class"];
+// style 仅用于表格单元格的 text-align 对齐；进入净化器的 HTML 全部由
+// 模型序列化生成（行内 HTML 禁用、原始块惰性渲染），不存在用户控制的
+// style 值，因此放行是安全的。
+const allowedAttributes = ["href", "title", "src", "alt", "class", "style"];
 
 /**
  * 清理导出的 HTML：只保留文档结构所需的标签与属性。任何脚本、
