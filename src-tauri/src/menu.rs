@@ -1,5 +1,5 @@
-//! 原生应用菜单（对齐 Typora 与 Electron 版 menu.ts：文件/编辑/段落/
-//! 格式/模式/主题 + 导出与最近打开子菜单）。
+//! 原生应用菜单（文件/编辑/段落/格式/主题 + 导出与最近打开子菜单；
+//! 「段落 > 表格」为表格操作子菜单，模式切换经 Ctrl+/ 与状态栏入口）。
 
 use crate::state::ThemePreference;
 use tauri::menu::{
@@ -7,21 +7,30 @@ use tauri::menu::{
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+enum MenuNode {
+    Item(Entry),
+    Separator,
+}
+
 struct Entry {
     id: &'static str,
     text: &'static str,
     accelerator: Option<&'static str>,
 }
 
-const fn item(id: &'static str, text: &'static str, accelerator: Option<&'static str>) -> Entry {
-    Entry {
+const fn item(id: &'static str, text: &'static str, accelerator: Option<&'static str>) -> MenuNode {
+    MenuNode::Item(Entry {
         id,
         text,
         accelerator,
-    }
+    })
 }
 
-fn file_entries() -> Vec<Entry> {
+const fn separator() -> MenuNode {
+    MenuNode::Separator
+}
+
+fn file_entries() -> Vec<MenuNode> {
     vec![
         item("new", "新建", Some("CmdOrCtrl+N")),
         item("new-window", "新窗口", Some("CmdOrCtrl+Shift+N")),
@@ -31,7 +40,7 @@ fn file_entries() -> Vec<Entry> {
     ]
 }
 
-fn export_entries() -> Vec<Entry> {
+fn export_entries() -> Vec<MenuNode> {
     vec![
         item("export-html", "HTML", None),
         item("export-pdf", "PDF", None),
@@ -44,39 +53,67 @@ fn export_entries() -> Vec<Entry> {
     ]
 }
 
-fn paragraph_entries() -> Vec<Entry> {
+/// 段落菜单前半段（plan.md 顺序）：标题 → 段落 → 级别调整；
+/// 后接「表格」子菜单，再接 paragraph_entries_tail。
+fn paragraph_entries_head() -> Vec<MenuNode> {
     vec![
-        item("paragraph-paragraph", "段落", Some("CmdOrCtrl+0")),
         item("paragraph-heading-1", "一级标题", Some("CmdOrCtrl+1")),
         item("paragraph-heading-2", "二级标题", Some("CmdOrCtrl+2")),
         item("paragraph-heading-3", "三级标题", Some("CmdOrCtrl+3")),
         item("paragraph-heading-4", "四级标题", Some("CmdOrCtrl+4")),
         item("paragraph-heading-5", "五级标题", Some("CmdOrCtrl+5")),
         item("paragraph-heading-6", "六级标题", Some("CmdOrCtrl+6")),
+        separator(),
+        item("paragraph-paragraph", "段落", Some("CmdOrCtrl+0")),
+        separator(),
         item("paragraph-heading-promote", "提升标题级别", Some("CmdOrCtrl+=")),
         item("paragraph-heading-demote", "降低标题级别", Some("CmdOrCtrl+-")),
-        item("paragraph-table", "表格", Some("CmdOrCtrl+T")),
+    ]
+}
+
+/// 段落菜单后半段：「表格」子菜单之后的代码块/引用块、列表、水平分割线。
+fn paragraph_entries_tail() -> Vec<MenuNode> {
+    vec![
         item("paragraph-code-block", "代码块", Some("CmdOrCtrl+Shift+K")),
         item("paragraph-quote", "引用块", Some("CmdOrCtrl+Shift+Q")),
+        separator(),
         item("paragraph-ordered-list", "有序列表", Some("CmdOrCtrl+Shift+O")),
         item("paragraph-bullet-list", "无序列表", Some("CmdOrCtrl+Shift+U")),
         item("paragraph-task-list", "任务列表", None),
+        separator(),
         item("paragraph-horizontal-rule", "水平分割线", Some("CmdOrCtrl+Shift+-")),
     ]
 }
 
-/// 表格编辑子菜单：仅在所见即所得模式且光标位于表格内时生效
-/// （渲染端命令自行判定，否则静默无操作）。
-fn table_edit_entries() -> Vec<Entry> {
+/// 表格子菜单：「表格」菜单项指向的子菜单（plan.md）。除「插入表格」
+/// 外仅在所见即所得模式且光标位于表格内时生效（渲染端命令自行判定，
+/// 否则静默无操作）。
+fn table_entries() -> Vec<MenuNode> {
     vec![
-        item("table-add-row", "添加行", None),
-        item("table-add-column", "添加列", None),
-        item("table-delete-row", "删除行", None),
+        item("table-insert", "插入表格", Some("CmdOrCtrl+T")),
+        separator(),
+        item("table-insert-row-above", "上方插入行", None),
+        item("table-insert-row-below", "下方插入行", Some("CmdOrCtrl+Enter")),
+        separator(),
+        item("table-insert-column-left", "左侧插入列", None),
+        item("table-insert-column-right", "右侧插入列", None),
+        separator(),
+        item("table-move-row-up", "上移该行", Some("Alt+ArrowUp")),
+        item("table-move-row-down", "下移该行", Some("Alt+ArrowDown")),
+        item("table-move-column-left", "左移该列", Some("Alt+ArrowLeft")),
+        item("table-move-column-right", "右移该列", Some("Alt+ArrowRight")),
+        separator(),
+        item("table-delete-row", "删除行", Some("CmdOrCtrl+Shift+Backspace")),
         item("table-delete-column", "删除列", None),
+        separator(),
+        item("table-copy", "复制表格", None),
+        item("table-format", "格式化表格源码", None),
+        separator(),
+        item("table-delete", "删除表格", None),
     ]
 }
 
-fn format_entries() -> Vec<Entry> {
+fn format_entries() -> Vec<MenuNode> {
     vec![
         item("format-bold", "加粗", Some("CmdOrCtrl+B")),
         item("format-italic", "斜体", Some("CmdOrCtrl+I")),
@@ -87,30 +124,25 @@ fn format_entries() -> Vec<Entry> {
     ]
 }
 
-fn mode_entries() -> Vec<Entry> {
-    vec![
-        item("toggle-wysiwyg", "所见即所得模式", None),
-        item("toggle-source", "源码模式", Some("CmdOrCtrl+/")),
-        item("toggle-read", "阅读模式", None),
-    ]
-}
-
-fn help_entries() -> Vec<Entry> {
+fn help_entries() -> Vec<MenuNode> {
     vec![item("about", "关于", None)]
 }
 
 fn push_entries<'a, R: Runtime, M: Manager<R>>(
     handle: &'a M,
     builder: SubmenuBuilder<'a, R, M>,
-    entries: &[Entry],
+    entries: &[MenuNode],
 ) -> SubmenuBuilder<'a, R, M> {
-    entries.iter().fold(builder, |builder, entry| {
-        let mut menu_item = MenuItemBuilder::with_id(entry.id, entry.text);
-        if let Some(accelerator) = entry.accelerator {
-            menu_item = menu_item.accelerator(accelerator);
+    entries.iter().fold(builder, |builder, node| match node {
+        MenuNode::Separator => builder.separator(),
+        MenuNode::Item(entry) => {
+            let mut menu_item = MenuItemBuilder::with_id(entry.id, entry.text);
+            if let Some(accelerator) = entry.accelerator {
+                menu_item = menu_item.accelerator(accelerator);
+            }
+            builder
+                .item(&menu_item.build(handle).expect("菜单项创建失败"))
         }
-        builder
-            .item(&menu_item.build(handle).expect("菜单项创建失败"))
     })
 }
 
@@ -184,20 +216,26 @@ pub fn build(handle: &AppHandle) {
         .build()
         .expect("编辑菜单创建失败");
 
-    let table_menu = push_entries(handle, SubmenuBuilder::new(handle, "表格编辑"), &table_edit_entries())
+    let table_menu = push_entries(handle, SubmenuBuilder::new(handle, "表格"), &table_entries())
         .build()
-        .expect("表格编辑子菜单创建失败");
-    let paragraph_menu = push_entries(handle, SubmenuBuilder::new(handle, "段落"), &paragraph_entries())
+        .expect("表格子菜单创建失败");
+    let paragraph_menu = push_entries(
+        handle,
+        push_entries(
+            handle,
+            SubmenuBuilder::new(handle, "段落"),
+            &paragraph_entries_head(),
+        )
         .separator()
         .item(&table_menu)
-        .build()
-        .expect("段落菜单创建失败");
+        .separator(),
+        &paragraph_entries_tail(),
+    )
+    .build()
+    .expect("段落菜单创建失败");
     let format_menu = push_entries(handle, SubmenuBuilder::new(handle, "格式"), &format_entries())
         .build()
         .expect("格式菜单创建失败");
-    let mode_menu = push_entries(handle, SubmenuBuilder::new(handle, "模式"), &mode_entries())
-        .build()
-        .expect("模式菜单创建失败");
     // 帮助菜单固定在最右（最后加入 MenuBuilder）。
     let help_menu = push_entries(handle, SubmenuBuilder::new(handle, "帮助"), &help_entries())
         .build()
@@ -221,7 +259,6 @@ pub fn build(handle: &AppHandle) {
         .item(&edit_menu)
         .item(&paragraph_menu)
         .item(&format_menu)
-        .item(&mode_menu)
         .item(&theme_menu)
         .item(&help_menu)
         .build()

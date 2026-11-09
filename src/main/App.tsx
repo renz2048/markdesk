@@ -16,7 +16,6 @@ import {
   demoteHeading,
   insertHorizontalRule,
   insertImage,
-  insertTable,
   promoteHeading,
   setBlockquote,
   setCodeBlock,
@@ -28,10 +27,19 @@ import {
   toggleTaskList,
 } from "./editor/commands";
 import {
+  copyTable,
+  deleteTable,
   deleteTableColumn,
   deleteTableRow,
+  formatTable,
+  insertTableColumnLeft,
   insertTableColumnRight,
+  insertTableRowAbove,
   insertTableRowBelow,
+  moveTableColumnLeft,
+  moveTableColumnRight,
+  moveTableRowDown,
+  moveTableRowUp,
 } from "./editor/tableEditing";
 import { parseMarkdown } from "../markdown/parser";
 import { serializeMarkdown } from "../markdown/serializer";
@@ -49,9 +57,9 @@ import {
   SetEditorViewContext,
 } from "./components/EditorContexts";
 import { OutlinePanel } from "./components/OutlinePanel";
-import { ReadView } from "./components/ReadView";
 import { SourceEditor } from "./components/SourceEditor";
 import { StatusBar } from "./components/StatusBar";
+import { TableSizePopover, type TableSizeDraft } from "./components/TableSizePopover";
 import { WysiwygEditor } from "./components/WysiwygEditor";
 import { activeOutlinePosition, outlineFromDoc } from "./editor/outline";
 import { buildExportHtml } from "./editor/exportHtml";
@@ -180,12 +188,21 @@ const menuFormattingCommands: Partial<Record<MenuCommand, Command>> = {
   "paragraph-ordered-list": toggleOrderedList(),
   "paragraph-task-list": toggleTaskList(),
   "paragraph-horizontal-rule": insertHorizontalRule(),
-  "paragraph-table": insertTable(),
-  // 表格编辑命令仅在光标位于表格内时生效（命令内部自行判定）。
-  "table-add-row": insertTableRowBelow(),
-  "table-add-column": insertTableColumnRight(),
+  // 表格命令（「插入表格」经弹窗单独处理）仅在光标位于表格内时生效
+  // （命令内部自行判定，表格外静默无操作）。
+  "table-insert-row-above": insertTableRowAbove(),
+  "table-insert-row-below": insertTableRowBelow(),
+  "table-insert-column-left": insertTableColumnLeft(),
+  "table-insert-column-right": insertTableColumnRight(),
+  "table-move-row-up": moveTableRowUp(),
+  "table-move-row-down": moveTableRowDown(),
+  "table-move-column-left": moveTableColumnLeft(),
+  "table-move-column-right": moveTableColumnRight(),
   "table-delete-row": deleteTableRow(),
   "table-delete-column": deleteTableColumn(),
+  "table-copy": copyTable(),
+  "table-format": formatTable(),
+  "table-delete": deleteTable(),
 };
 
 // Pandoc 导出目标（主进程转换；未安装 Pandoc 时报错提示）。
@@ -248,9 +265,14 @@ function menuShortcutCommand(
     case "w":
       return null; // Ctrl+W 走关闭保护流程，见下方监听器
     case "/":
-      return "toggle-source";
+      return null; // Ctrl+/ 在监听器内联处理（切换源码模式）
     case "t":
-      return "paragraph-table";
+      return "table-insert";
+    case "enter":
+      return "table-insert-row-below";
+    case "backspace":
+      // Ctrl+Shift+Backspace 删除表格行；普通退格不在此拦截。
+      return shift ? "table-delete-row" : null;
     case "=":
       return "paragraph-heading-promote";
     case "-":
@@ -392,6 +414,10 @@ export default function App() {
   // 导出成功的轻提示（几秒后自动消失）。
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [aboutVisible, setAboutVisible] = useState(false);
+  // 「插入表格」弹窗（Ctrl+T）：仅所见即所得模式下打开。
+  const [tableSizeDraft, setTableSizeDraft] = useState<TableSizeDraft | null>(
+    null,
+  );
   const [outlineWidth, setOutlineWidth] = useState(loadOutlineWidth);
   const [sidebarVisible, setSidebarVisible] = useState(true);
 
@@ -1269,12 +1295,14 @@ export default function App() {
           fileName: draft.fileName,
           dirty: true,
         });
-        if (draft.mode !== "wysiwyg") {
-          useDocumentStore.getState().transitionMode(draft.mode);
+        // 历史草稿可能保存为 "read"（阅读模式已移除），回落所见即所得。
+        const draftMode: EditorMode = draft.mode === "source" ? "source" : "wysiwyg";
+        if (draftMode !== "wysiwyg") {
+          useDocumentStore.getState().transitionMode(draftMode);
         }
         draftQueueRef.current.activeKey = draft.key;
         restoreDraftViewRef.current = {
-          mode: draft.mode,
+          mode: draftMode,
           sessionKey: useDocumentStore.getState().sessionKey,
           cursor: draft.cursor,
           scrollTop: draft.scrollTop,
@@ -1401,6 +1429,24 @@ export default function App() {
     [createUntitledDocument, transitionMode],
   );
 
+  /** 打开「插入表格」弹窗：定位到当前选区附近；无选区坐标时居中。 */
+  const openTableSizePopover = useCallback(() => {
+    if (mode !== "wysiwyg" || !editorView) return;
+    let top = Math.max(window.innerHeight / 2 - 90, 12);
+    let left = Math.max(window.innerWidth / 2 - 140, 12);
+    try {
+      const coords = editorView.coordsAtPos(editorView.state.selection.from);
+      top = coords.bottom + 8;
+      left = Math.min(
+        Math.max(coords.left, 12),
+        Math.max(12, window.innerWidth - 292),
+      );
+    } catch {
+      // 无坐标（如空文档首屏）时用居中位置。
+    }
+    setTableSizeDraft({ top, left });
+  }, [editorView, mode]);
+
   const handleMenuCommand = useCallback(
     (command: MenuCommand) => {
       // “关于”与文件操作无关，任何状态下都可打开。
@@ -1430,9 +1476,9 @@ export default function App() {
       else if (command === "export-mediawiki") {
         void exportDocument("mediawiki");
       }
-      else if (command === "toggle-source") handleModeChange("source");
-      else if (command === "toggle-read") handleModeChange("read");
-      else if (command === "toggle-wysiwyg") handleModeChange("wysiwyg");
+      else if (command === "table-insert") {
+        openTableSizePopover();
+      }
       else if (command === "format-image") {
         void insertImageFromDialog();
       } else {
@@ -1456,6 +1502,7 @@ export default function App() {
       insertImageFromDialog,
       mode,
       openDocument,
+      openTableSizePopover,
       recoveryDraft,
       requestFileAction,
       saveDocument,
@@ -1514,6 +1561,12 @@ export default function App() {
         requestFileAction({ type: "close" });
         return;
       }
+      // Ctrl+/：所见即所得 ↔ 源码模式（原「模式」菜单已删除）。
+      if (key === "/" && !event.shiftKey) {
+        event.preventDefault();
+        handleModeChange(mode === "source" ? "wysiwyg" : "source");
+        return;
+      }
       const command = menuShortcutCommand(event.shiftKey, key);
       if (!command) return;
       event.preventDefault();
@@ -1521,7 +1574,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleMenuCommand, requestFileAction]);
+  }, [handleMenuCommand, handleModeChange, mode, requestFileAction]);
 
   // 启动参数携带的文档（argv 双击打开）：渲染端就绪后主动拉取一次，
   // 避免“事件早于监听器就绪”的竞态。
@@ -1806,9 +1859,7 @@ export default function App() {
                     onChange={handleSourceChange}
                     onSelectionChange={setSourceCursorPosition}
                   />
-                ) : (
-                  <ReadView doc={doc} />
-                )}
+                ) : null}
                 {/* 底栏只占编辑列宽度：侧栏直达窗口底部（Typora 布局）。 */}
                 <StatusBar
                   mode={mode}
@@ -1860,6 +1911,13 @@ export default function App() {
       ) : null}
       {aboutVisible && api ? (
         <AboutDialog api={api} onClose={() => setAboutVisible(false)} />
+      ) : null}
+      {tableSizeDraft && editorView ? (
+        <TableSizePopover
+          draft={tableSizeDraft}
+          view={editorView}
+          onClose={() => setTableSizeDraft(null)}
+        />
       ) : null}
       {fileCollision !== null ? (
         <FileCollisionDialog

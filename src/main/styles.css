@@ -432,6 +432,82 @@ body {
   box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
 }
 
+/* 插入表格弹窗（Ctrl+T）：列/行选择 + 取消/确认，同浮层视觉。 */
+.table-size-popover {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  gap: 12px;
+  width: min(280px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+}
+
+.table-size-popover h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.table-size-fields {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.table-size-fields label {
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
+.table-size-fields input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+
+.table-size-fields input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.table-size-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.table-size-actions button {
+  min-width: 72px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+.table-size-actions button[type="submit"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.table-size-actions button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
 .link-popover h2 {
   margin: 0;
   font-size: 1rem;
@@ -515,7 +591,7 @@ body {
   width: 100%;
 }
 
-:is(.ProseMirror, .read-view) {
+.ProseMirror {
   max-width: 860px;
   min-height: 60vh;
   margin: 0 auto;
@@ -527,14 +603,14 @@ body {
 }
 
 @media only screen and (min-width: 1400px) {
-  :is(.ProseMirror, .read-view),
+  .ProseMirror,
   .source-editor .cm-editor {
     max-width: 1024px;
   }
 }
 
 @media only screen and (min-width: 1800px) {
-  :is(.ProseMirror, .read-view),
+  .ProseMirror,
   .source-editor .cm-editor {
     max-width: 1200px;
   }
@@ -559,100 +635,100 @@ body {
   color: var(--blockquote-foreground);
 }
 
-:is(.ProseMirror, .read-view) ::selection {
+.ProseMirror ::selection {
   background: var(--selection-background);
   color: var(--selection-foreground);
 }
 
 /* 标题字号与 h1/h2 下划线分隔线照搬 github.css。 */
-:is(.ProseMirror, .read-view) h1,
-:is(.ProseMirror, .read-view) h2,
-:is(.ProseMirror, .read-view) h3,
-:is(.ProseMirror, .read-view) h4,
-:is(.ProseMirror, .read-view) h5,
-:is(.ProseMirror, .read-view) h6 {
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3,
+.ProseMirror h4,
+.ProseMirror h5,
+.ProseMirror h6 {
   margin: 1rem 0;
   font-weight: bold;
   line-height: 1.4;
   color: var(--editor-foreground);
 }
 
-.theme-dark :is(.ProseMirror, .read-view) h1,
-.theme-dark :is(.ProseMirror, .read-view) h2,
-.theme-dark :is(.ProseMirror, .read-view) h3 {
+.theme-dark .ProseMirror h1,
+.theme-dark .ProseMirror h2,
+.theme-dark .ProseMirror h3 {
   /* night 主题标题色 #DEDEDE */
   color: #dedede;
 }
 
-:is(.ProseMirror, .read-view) h1 {
+.ProseMirror h1 {
   font-size: 2.25em;
   line-height: 1.2;
   border-bottom: 1px solid var(--heading-underline);
 }
 
-:is(.ProseMirror, .read-view) h2 {
+.ProseMirror h2 {
   font-size: 1.75em;
   line-height: 1.225;
   border-bottom: 1px solid var(--heading-underline);
 }
 
-:is(.ProseMirror, .read-view) h3 {
+.ProseMirror h3 {
   font-size: 1.5em;
   line-height: 1.43;
 }
 
-:is(.ProseMirror, .read-view) h4 {
+.ProseMirror h4 {
   font-size: 1.25em;
 }
 
-:is(.ProseMirror, .read-view) h5 {
+.ProseMirror h5 {
   font-size: 1em;
 }
 
-:is(.ProseMirror, .read-view) h6 {
+.ProseMirror h6 {
   font-size: 1em;
   color: var(--muted-foreground);
 }
 
-:is(.ProseMirror, .read-view) p,
-:is(.ProseMirror, .read-view) ul,
-:is(.ProseMirror, .read-view) ol,
-:is(.ProseMirror, .read-view) blockquote,
-:is(.ProseMirror, .read-view) table {
+.ProseMirror p,
+.ProseMirror ul,
+.ProseMirror ol,
+.ProseMirror blockquote,
+.ProseMirror table {
   margin: 0.8em 0;
 }
 
-:is(.ProseMirror, .read-view) pre {
+.ProseMirror pre {
   margin: 15px 0;
 }
 
-:is(.ProseMirror, .read-view) ul,
-:is(.ProseMirror, .read-view) ol {
+.ProseMirror ul,
+.ProseMirror ol {
   padding-left: 30px;
 }
 
 /* 引用块：4px 左竖线 + 灰字（github.css blockquote）。 */
-:is(.ProseMirror, .read-view) blockquote {
+.ProseMirror blockquote {
   padding: 0 15px;
   border-left: 4px solid var(--blockquote-border);
   color: var(--blockquote-foreground);
 }
 
 /* 代码：行内浅灰底；代码块 #f8f8f8 底 + 1px 边框、3px 圆角。 */
-:is(.ProseMirror, .read-view) code,
-:is(.ProseMirror, .read-view) pre {
+.ProseMirror code,
+.ProseMirror pre {
   border-radius: 3px;
   font-family: var(--monospace);
 }
 
-:is(.ProseMirror, .read-view) code {
+.ProseMirror code {
   padding: 2px 4px;
   background: var(--code-inline-background);
   color: var(--code-foreground);
   font-size: 0.9em;
 }
 
-:is(.ProseMirror, .read-view) pre {
+.ProseMirror pre {
   overflow: auto;
   padding: 8px 10px 6px;
   /* 与 Typora 一致：代码块不折行，超宽行在底部出横向滚动条。 */
@@ -661,17 +737,17 @@ body {
   color: var(--code-foreground);
 }
 
-.theme-light :is(.ProseMirror, .read-view) pre {
+.theme-light .ProseMirror pre {
   border: 1px solid var(--code-border);
 }
 
-:is(.ProseMirror, .read-view) pre code {
+.ProseMirror pre code {
   padding: 0;
   background: transparent;
   font-size: 0.9em;
 }
 
-:is(.ProseMirror, .read-view) hr {
+.ProseMirror hr {
   height: 2px;
   padding: 0;
   margin: 16px 0;
@@ -680,55 +756,50 @@ body {
   overflow: hidden;
 }
 
-:is(.ProseMirror, .read-view) a {
+.ProseMirror a {
   color: var(--link-color);
 }
 
-:is(.ProseMirror, .read-view) a[data-inert-link] {
+.ProseMirror a[data-inert-link] {
   color: var(--editor-foreground);
   cursor: default;
   text-decoration: none;
 }
 
-:is(.ProseMirror, .read-view) img {
+.ProseMirror img {
   max-width: 100%;
   height: auto;
 }
 
 /* 表格：单元格 1px #dfe2e5 边框、表头与偶数行 #f8f8f8 底纹。 */
-:is(.ProseMirror, .read-view) table {
+.ProseMirror table {
   width: 100%;
   border-collapse: collapse;
 }
 
-:is(.ProseMirror, .read-view) tr,
-:is(.ProseMirror, .read-view) th,
-:is(.ProseMirror, .read-view) td {
+.ProseMirror tr,
+.ProseMirror th,
+.ProseMirror td {
   border: 1px solid var(--table-border);
 }
 
-:is(.ProseMirror, .read-view) th,
-:is(.ProseMirror, .read-view) td {
+.ProseMirror th,
+.ProseMirror td {
   padding: 6px 13px;
   vertical-align: top;
 }
 
-:is(.ProseMirror, .read-view) th {
+.ProseMirror th {
   font-weight: bold;
 }
 
-:is(.ProseMirror, .read-view) thead,
-:is(.ProseMirror, .read-view) tr:nth-child(2n) {
+.ProseMirror thead,
+.ProseMirror tr:nth-child(2n) {
   background-color: var(--table-stripe);
 }
 
-:is(.ProseMirror, .read-view) [data-markdesk-raw] {
+.ProseMirror [data-markdesk-raw] {
   color: var(--danger);
-}
-
-.read-view {
-  cursor: default;
-  user-select: text;
 }
 
 /* 源码模式：Typora 源码视图是铺满白底的等宽文本，无卡片描边。 */

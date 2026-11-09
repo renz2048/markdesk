@@ -3,7 +3,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { markdownSchema } from "../../src/markdown/schema";
 import { parseMarkdown } from "../../src/markdown/parser";
-import { ReadView } from "../../src/main/components/ReadView";
 import { SourceEditor } from "../../src/main/components/SourceEditor";
 import { StatusBar } from "../../src/main/components/StatusBar";
 import { useDocumentStore } from "../../src/main/state/documentStore";
@@ -77,7 +76,7 @@ describe("editor modes", () => {
     expect(state.modeTransitionError).toBeNull();
   });
 
-  it("updates the read model from source while preserving dirty state", () => {
+  it("parses edited source back while preserving dirty state", () => {
     useDocumentStore.getState().replaceDocument({
       doc: parseMarkdown("# Before\n"),
       filePath: null,
@@ -87,10 +86,10 @@ describe("editor modes", () => {
     useDocumentStore.getState().transitionMode("source");
     useDocumentStore.getState().setSourceText("# For reading\n");
 
-    useDocumentStore.getState().transitionMode("read");
+    useDocumentStore.getState().transitionMode("wysiwyg");
 
     const state = useDocumentStore.getState();
-    expect(state.mode).toBe("read");
+    expect(state.mode).toBe("wysiwyg");
     expect(state.doc.textContent).toBe("For reading");
     expect(state.dirty).toBe(true);
     expect(state.modeTransitionError).toBeNull();
@@ -166,13 +165,6 @@ describe("editor modes", () => {
     );
     expect(source).toContain('data-testid="source-editor"');
     expect(source).toContain('data-session-key="session-1"');
-
-    const read = renderToStaticMarkup(
-      createElement(ReadView, { doc: parseMarkdown("# Read\n") }),
-    );
-    expect(read).toContain('data-testid="read-view"');
-    expect(read).toContain('contenteditable="false"');
-    expect(read).toContain('aria-readonly="true"');
 
     const status = renderToStaticMarkup(
       createElement(StatusBar, {

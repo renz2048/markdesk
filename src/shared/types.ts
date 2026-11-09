@@ -26,6 +26,10 @@ export interface RecentFileStatus extends RecentFile {
   exists: boolean;
 }
 
+/**
+ * 草稿保存时的编辑模式。历史草稿可能含 "read"（阅读模式已移除），
+ * 恢复时按 "wysiwyg" 处理。
+ */
 export type RecoveryDraftMode = "wysiwyg" | "source" | "read";
 
 export interface RecoveryDraft {
@@ -63,9 +67,6 @@ export type MenuCommand =
   | "export-epub"
   | "export-latex"
   | "export-mediawiki"
-  | "toggle-source"
-  | "toggle-read"
-  | "toggle-wysiwyg"
   | "theme-light"
   | "theme-dark"
   | "theme-system"
@@ -90,11 +91,20 @@ export type MenuCommand =
   | "paragraph-ordered-list"
   | "paragraph-task-list"
   | "paragraph-horizontal-rule"
-  | "paragraph-table"
-  | "table-add-row"
-  | "table-add-column"
+  | "table-insert"
+  | "table-insert-row-above"
+  | "table-insert-row-below"
+  | "table-insert-column-left"
+  | "table-insert-column-right"
+  | "table-move-row-up"
+  | "table-move-row-down"
+  | "table-move-column-left"
+  | "table-move-column-right"
   | "table-delete-row"
   | "table-delete-column"
+  | "table-copy"
+  | "table-format"
+  | "table-delete"
   | "about";
 
 export interface FileChangedEvent {

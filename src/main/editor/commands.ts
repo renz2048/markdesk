@@ -230,24 +230,36 @@ function changeHeadingLevel(delta: number): Command {
   };
 }
 
-/** 插入默认 3 列 × 2 行表格（含表头行），光标落入首个单元格。Ctrl+T */
-export function insertTable(): Command {
+/**
+ * 插入 columns 列 × rows 行表格（含表头行，默认 3×4，Ctrl+T 弹窗确认
+ * 后调用），光标落入首个单元格。表格成为文档末块时在其后保留两个空
+ * 段落作续写落点（plan.md：表格下方应保留两行空行）；空段落序列化不
+ * 产生输出，不影响保存的 Markdown 规范形式。
+ */
+export function insertTable(columns = 3, rows = 4): Command {
   return (state: EditorState, dispatch?: (tr: Transaction) => void) => {
-    const columns = 3;
+    const columnCount = Math.min(Math.max(Math.trunc(columns) || 1, 1), 64);
+    const rowCount = Math.min(Math.max(Math.trunc(rows) || 1, 1), 64);
     const makeRow = (header: boolean) =>
       markdownSchema.nodes.table_row.create(
         null,
-        Array.from({ length: columns }, () =>
+        Array.from({ length: columnCount }, () =>
           markdownSchema.nodes.table_cell.create({ header }),
         ),
       );
     const table = markdownSchema.nodes.table.create(null, [
       makeRow(true),
-      makeRow(false),
+      ...Array.from({ length: rowCount - 1 }, () => makeRow(false)),
     ]);
     if (!dispatch) return true;
     const tr = state.tr.replaceSelectionWith(table);
     const tableStart = tr.selection.from - table.nodeSize;
+    const tableEnd = tableStart + table.nodeSize;
+    if (!tr.doc.resolve(tableEnd).nodeAfter) {
+      for (let index = 0; index < 2; index += 1) {
+        tr.insert(tableEnd, markdownSchema.nodes.paragraph.create());
+      }
+    }
     // doc > table > row > cell 的内容起点：+3。
     tr.setSelection(
       TextSelection.near(tr.doc.resolve(tableStart + 3), 1),

@@ -9,11 +9,21 @@ import { serializeMarkdown } from "../../src/markdown/serializer";
 import { insertTable } from "../../src/main/editor/commands";
 import { buildExportHtml } from "../../src/main/editor/exportHtml";
 
-function applyInsertTable(): EditorState {
-  const command: Command = insertTable();
+function applyInsertTable(
+  source = "",
+  cursor?: number,
+  columns?: number,
+  rows?: number,
+): EditorState {
+  const command: Command = insertTable(columns, rows);
+  const doc = parseMarkdown(source);
   const state = EditorState.create({
     schema: markdownSchema,
-    doc: parseMarkdown(""),
+    doc,
+    selection: TextSelection.near(
+      doc.resolve(Math.min(Math.max(cursor ?? doc.content.size, 0), doc.content.size)),
+      1,
+    ),
   });
   let dispatched: Transaction | undefined;
   expect(command(state, (transaction) => { dispatched = transaction; })).toBe(
@@ -24,13 +34,19 @@ function applyInsertTable(): EditorState {
 }
 
 describe("insertTable command", () => {
-  it("creates a 3x2 table with a header row and no leftover blocks", () => {
+  it("creates a 3x4 table with a header row and two landing paragraphs below", () => {
     const doc = applyInsertTable().doc;
 
-    expect(doc.childCount).toBe(1);
+    // 默认 3 列 × 4 行（含表头）；表格成为末块时补两个空段落
+    // （plan.md：表格下方保留两行空行）。
+    expect(doc.childCount).toBe(3);
     const table = doc.child(0);
     expect(table.type).toBe(markdownSchema.nodes.table);
-    expect(table.childCount).toBe(2);
+    expect(table.childCount).toBe(4);
+    for (const child of [doc.child(1), doc.child(2)]) {
+      expect(child.type).toBe(markdownSchema.nodes.paragraph);
+      expect(child.content.size).toBe(0);
+    }
 
     const [header, body] = [table.child(0), table.child(1)];
     expect(header.childCount).toBe(3);
@@ -42,6 +58,33 @@ describe("insertTable command", () => {
     for (const cell of [body.child(0), body.child(1), body.child(2)]) {
       expect(cell.attrs.header).toBe(false);
     }
+  });
+
+  it("honors explicit column and row counts from the size dialog", () => {
+    const doc = applyInsertTable("", undefined, 2, 3).doc;
+    const table = doc.child(0);
+    expect(table.childCount).toBe(3);
+    expect(table.child(0).childCount).toBe(2);
+  });
+
+  it("appends the landing paragraphs when inserting at the end of text", () => {
+    // 光标在末段文字末尾：段落文字留在表格上方，表格成为末块 → 补两段落。
+    const doc = applyInsertTable("前言\n", 3).doc;
+    expect(doc.childCount).toBe(4);
+    expect(doc.child(0).textContent).toBe("前言");
+    expect(doc.child(1).type).toBe(markdownSchema.nodes.table);
+    expect(doc.child(2).type).toBe(markdownSchema.nodes.paragraph);
+    expect(doc.child(3).type).toBe(markdownSchema.nodes.paragraph);
+  });
+
+  it("does not add an extra paragraph when text follows the table", () => {
+    // 光标在段落中间（“段|落”）：光标之后的文字成为表格后的段落，无需补。
+    const doc = applyInsertTable("段落\n\n尾段\n", 2).doc;
+    expect(doc.childCount).toBe(4);
+    expect(doc.child(0).textContent).toBe("段");
+    expect(doc.child(1).type).toBe(markdownSchema.nodes.table);
+    expect(doc.child(2).textContent).toBe("落");
+    expect(doc.child(3).textContent).toBe("尾段");
   });
 
   it("places the cursor in the first header cell", () => {
@@ -61,7 +104,7 @@ describe("insertTable command", () => {
 
     const table = reparsed.child(0);
     expect(table.type).toBe(markdownSchema.nodes.table);
-    expect(table.childCount).toBe(2);
+    expect(table.childCount).toBe(4);
     expect(table.child(0).childCount).toBe(3);
     expect(table.child(0).child(0).attrs.header).toBe(true);
     expect(table.child(1).child(0).attrs.header).toBe(false);

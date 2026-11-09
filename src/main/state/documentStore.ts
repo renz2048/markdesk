@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { parseMarkdown } from "../../markdown/parser";
 import { serializeMarkdown } from "../../markdown/serializer";
 
-export type EditorMode = "wysiwyg" | "source" | "read";
+export type EditorMode = "wysiwyg" | "source";
 export type ThemePreference = "light" | "dark" | "system";
 export type ModeTransitionErrorKind = "parse" | "serialize";
 

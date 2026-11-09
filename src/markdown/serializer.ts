@@ -292,7 +292,8 @@ function paddedAlignmentMarker(
   return `:${"-".repeat(width - 1)}`;
 }
 
-function tableMarkdown(table: Node): string {
+/** 表格节点的规范 Markdown 源码（列宽对齐填充）。「复制表格」等复用。 */
+export function renderTableMarkdown(table: Node): string {
   const rows: { content: string; alignment: TableAlignment }[][] = [];
   const alignments: TableAlignment[] = [];
   const widths: number[] = [];
@@ -396,7 +397,7 @@ export const markdownSerializer = new MarkdownSerializer(
       state.closeBlock(node);
     },
     table(state, node) {
-      state.write(tableMarkdown(node));
+      state.write(renderTableMarkdown(node));
       state.closeBlock(node);
     },
     raw_block(state, node) {
