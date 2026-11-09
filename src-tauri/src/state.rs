@@ -92,7 +92,6 @@ pub struct RecoveryDraftSummary {
 pub struct Inner {
     pub read_grants: HashSet<String>,
     pub write_grants: HashSet<String>,
-    pub write_baselines: HashMap<String, Fingerprint>,
     pub recent: Vec<RecentFile>,
     pub drafts: Vec<RecoveryDraft>,
     pub granted_images: Vec<String>,
@@ -111,7 +110,6 @@ impl Default for Inner {
         Self {
             read_grants: HashSet::new(),
             write_grants: HashSet::new(),
-            write_baselines: HashMap::new(),
             recent: Vec::new(),
             drafts: Vec::new(),
             granted_images: Vec::new(),

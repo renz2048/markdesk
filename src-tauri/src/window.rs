@@ -48,22 +48,6 @@ pub fn create_main(handle: &AppHandle) {
     }
 }
 
-/// 触发关闭保护：第一次走渲染端确认，批准后（closing_windows）才真正关闭。
-pub fn on_close_requested(handle: &AppHandle, label: &str, api: &tauri::WindowEvent) {
-    let _ = api;
-    let approved = {
-        let app = handle.state::<crate::state::App>();
-        let inner = app.inner.lock().unwrap();
-        inner.closing_windows.contains(label)
-    };
-    if approved {
-        return; // 放行（不 prevent）
-    }
-    if let Some(window) = handle.webview_windows().get(label) {
-        let _ = window.emit_to(label, "close-requested", ());
-    }
-}
-
 pub fn request_close(handle: &AppHandle, window: &WebviewWindow) {
     {
         let app = handle.state::<crate::state::App>();

@@ -48,7 +48,7 @@ mod webview2 {
     ) -> Result<(), String> {
         window
             .with_webview(move |webview| {
-                let controller = unsafe { webview.controller() };
+                let controller = webview.controller();
                 if let Ok(core) = unsafe { controller.CoreWebView2() } {
                     run(&core);
                 }

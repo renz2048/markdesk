@@ -1,7 +1,7 @@
 //! 窗口标题栏/菜单随主题变化（对应 Electron 的 nativeTheme.themeSource）。
 
 use crate::state::ThemePreference;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager};
 
 pub fn apply(handle: &AppHandle, preference: ThemePreference) {
     let resolved = match preference {
@@ -19,14 +19,4 @@ pub fn apply(handle: &AppHandle, preference: ThemePreference) {
             }
         }
     }
-}
-
-/// 当前系统是否深色（供菜单勾选初始状态；渲染端自行用 matchMedia）。
-pub fn system_prefers_dark(handle: &AppHandle) -> bool {
-    handle
-        .webview_windows()
-        .values()
-        .find_map(|window: &WebviewWindow| window.theme().ok())
-        .map(|theme| theme == tauri::Theme::Dark)
-        .unwrap_or(false)
 }

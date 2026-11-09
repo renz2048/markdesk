@@ -2,7 +2,7 @@
 //! 指纹（sha256 + mtime + size）与原子写入（自 file-service.ts 移植）。
 
 use crate::policy;
-use crate::state::{now_ms, Fingerprint};
+use crate::state::Fingerprint;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -197,6 +197,3 @@ pub fn file_exists(path: &str) -> bool {
     fs::metadata(path).map(|info| info.is_file()).unwrap_or(false)
 }
 
-pub fn now() -> f64 {
-    now_ms()
-}
