@@ -53,4 +53,15 @@ describe("HTML export", () => {
     // 依赖应用协议。
     expect(html).toContain('src="assets/pic.png"');
   });
+
+  it("gives empty table cells a line box so rows keep full height", () => {
+    const html = buildExportHtml(
+      parseMarkdown("| A | B |\n| --- | --- |\n| 有内容 |  |\n|  |  |\n"),
+      "light",
+    );
+    // 空单元格序列化为 <td></td>：无行框，打印/PDF 中整行塌陷成
+    // 纯 padding 高度（issue #1）。CSS 注入零宽空格恢复行高。
+    expect(html).toContain("<td></td>");
+    expect(html).toContain('th:empty::after,td:empty::after{content:"\\200b"}');
+  });
 });

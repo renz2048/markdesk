@@ -74,6 +74,10 @@ pre code{padding:0;background:transparent}
 hr{height:2px;border:0;margin:16px 0;background:#e7e7e7}
 table{width:100%;border-collapse:collapse}
 th,td{border:1px solid #dfe2e5;padding:6px 13px;vertical-align:top}
+/* 空单元格无行框，打印/PDF 里整行会塌陷成只剩 padding；注入零宽
+空格让它拥有与文本行相同的行高（应用内编辑器单元格必有段落节点，
+天然等高，仅导出需要）。 */
+th:empty::after,td:empty::after{content:"\\200b"}
 thead,tr:nth-child(2n){background:#f8f8f8}
 html[data-theme="dark"]{background:#363B40;color:#b8bfc6}
 html[data-theme="dark"] h1,html[data-theme="dark"] h2,html[data-theme="dark"] h3{color:#DEDEDE;border-bottom-color:transparent}
