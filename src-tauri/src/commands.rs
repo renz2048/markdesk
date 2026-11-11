@@ -216,6 +216,10 @@ pub fn write_file(
     let newline = newline.unwrap_or_else(|| "lf".to_string());
     let result = service::write_markdown(&canonical, &content, &newline, expected)?;
     watcher::suppress_own_write(handle.clone(), &canonical);
+    // 另存为产生的新文件此前从未登记监听（register_open 只在读取时
+    // 调用），保存后的外部修改无法提示；这里统一登记（已监听则仅刷新
+    // 轮询基线）。
+    watcher::watch(handle.clone(), &canonical);
     broadcast_recent(&handle);
     Ok(result)
 }

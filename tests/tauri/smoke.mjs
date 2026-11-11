@@ -236,6 +236,28 @@ const changedNotice = await page
   .count();
 check("导出不触发外部修改提示", changedNotice === 0);
 
+// 10. 外部程序修改已打开文档 → 提示出现 → 重新加载拿到新内容
+//（issue #2 回归：notify 在 WSL/网络路径上静默失效，Rust 侧另有
+// 轮询兜底；此处覆盖本地路径的原生事件通道）。
+await writeFile(markdownPath, "# 冒烟\n\n外部修改验证\n", "utf8");
+let reloaded = 0;
+for (let i = 0; i < 20 && reloaded === 0; i += 1) {
+  await page.waitForTimeout(500);
+  reloaded = await page
+    .getByTestId("wysiwyg-editor-content")
+    .locator("p", { hasText: "外部修改验证" })
+    .count();
+  if (reloaded === 0) {
+    const noticeVisible = await page
+      .getByTestId("file-changed-notice")
+      .count();
+    if (noticeVisible === 1) {
+      await page.getByTestId("file-changed-reload").click();
+    }
+  }
+}
+check("外部修改提示与重新加载", reloaded === 1);
+
 await browser.close();
 child.kill("SIGKILL");
 clearTimeout(watchdog);
