@@ -747,6 +747,59 @@ body {
   font-size: 0.9em;
 }
 
+/* Mermaid 图表块：默认显示渲染图；光标进入（is-editing）切换为源码
+   编辑；渲染失败（has-error）时同时展示错误与源码便于修复。 */
+.markdesk-mermaid {
+  margin: 15px 0;
+}
+
+.markdesk-mermaid pre {
+  display: none;
+  margin: 0;
+}
+
+.markdesk-mermaid-preview {
+  overflow-x: auto;
+  padding: 12px;
+  background: var(--code-background);
+  border-radius: 3px;
+  text-align: center;
+}
+
+.markdesk-mermaid.is-rendered .markdesk-mermaid-preview {
+  /* mermaid 深浅主题自带配色，只在错误/占位态沿用代码块文字色。 */
+  color: inherit;
+}
+
+.markdesk-mermaid-preview svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdesk-mermaid.has-error .markdesk-mermaid-preview {
+  color: var(--danger);
+  font-family: var(--monospace);
+  font-size: 0.85em;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.theme-light .markdesk-mermaid-preview {
+  border: 1px solid var(--code-border);
+}
+
+.markdesk-mermaid.is-editing .markdesk-mermaid-preview,
+.markdesk-mermaid.has-error .markdesk-mermaid-preview {
+  margin-bottom: 0;
+}
+
+.markdesk-mermaid.is-editing pre,
+.markdesk-mermaid.has-error pre {
+  display: block;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
 .ProseMirror hr {
   height: 2px;
   padding: 0;

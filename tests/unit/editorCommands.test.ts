@@ -146,8 +146,8 @@ describe("editor commands", () => {
     ]);
     // history/undo keymap、formatting keymap、pending syntax、
     // list editing、table editing、base keymap、input rules、
-    // drop cursor、gap cursor 共 10 个插件。
-    expect(createEditorPlugins()).toHaveLength(10);
+    // drop cursor、gap cursor、mermaid 图表块共 11 个插件。
+    expect(createEditorPlugins()).toHaveLength(11);
 
     const bold = applyCommand(
       formattingKeymap["Mod-b"],

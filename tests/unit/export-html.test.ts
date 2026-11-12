@@ -15,8 +15,8 @@ describe("HTML export", () => {
     expect(clean).not.toContain("onclick");
   });
 
-  it("creates a complete themed document", () => {
-    const html = buildExportHtml(parseMarkdown("# Title"), "light");
+  it("creates a complete themed document", async () => {
+    const html = await buildExportHtml(parseMarkdown("# Title"), "light");
     expect(html).toContain("<!doctype html>");
     expect(html).toContain("<h1>Title</h1>");
     expect(html).toContain("MarkDesk exported document");
@@ -33,8 +33,8 @@ describe("HTML export", () => {
     expect(clean).toContain('alt="ok"');
   });
 
-  it("sanitizes the serialized document body", () => {
-    const html = buildExportHtml(
+  it("sanitizes the serialized document body", async () => {
+    const html = await buildExportHtml(
       parseMarkdown("# Head\n\n[link](https://example.com)"),
       "dark",
     );
@@ -44,8 +44,8 @@ describe("HTML export", () => {
     expect(html).toContain('data-theme="dark"');
   });
 
-  it("exports internal images with their original relative source", () => {
-    const html = buildExportHtml(
+  it("exports internal images with their original relative source", async () => {
+    const html = await buildExportHtml(
       parseMarkdown("![pic](assets/pic.png)"),
       "light",
     );
@@ -54,8 +54,8 @@ describe("HTML export", () => {
     expect(html).toContain('src="assets/pic.png"');
   });
 
-  it("gives empty table cells a line box so rows keep full height", () => {
-    const html = buildExportHtml(
+  it("gives empty table cells a line box so rows keep full height", async () => {
+    const html = await buildExportHtml(
       parseMarkdown("| A | B |\n| --- | --- |\n| 有内容 |  |\n|  |  |\n"),
       "light",
     );

@@ -12,6 +12,7 @@ import { formattingKeymap } from "../editor/commands";
 import { selectedLinkHref } from "../editor/commands";
 import { markdownInputRules } from "../editor/inputRules";
 import { listEditingPlugin } from "../editor/listEditing";
+import { mermaidBlockPlugin } from "../editor/mermaidBlock";
 import { tableEditingPlugin } from "../editor/tableEditing";
 import { pendingSyntaxPlugin } from "../editor/pendingSyntax";
 import { SetEditorSelectionContext, SetEditorViewContext } from "./EditorContexts";
@@ -128,6 +129,8 @@ export function createEditorPlugins(
     markdownInputRules(),
     dropCursor(),
     gapCursor(),
+    // Mermaid 图表块：code_block(mermaid) 渲染成图，光标进入切源码。
+    mermaidBlockPlugin(),
     ...(getPasteImageSource
       ? [createPasteImagePlugin(getPasteImageSource)]
       : []),

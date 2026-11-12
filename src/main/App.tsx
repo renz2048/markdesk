@@ -1011,7 +1011,7 @@ export default function App() {
           await api.exportHtml(
             target,
             // 导出固定浅色：文档用于打印/分享，不跟随应用内主题。
-            buildExportHtml(doc, "light"),
+            await buildExportHtml(doc, "light"),
           );
           setExportNotice(`已导出：${fileNameFromPath(target)}`);
         } else {
@@ -1019,7 +1019,7 @@ export default function App() {
             ? parseMarkdown(state.sourceText)
             : state.doc;
           // 导出固定浅色：PDF/PNG 用于打印/分享，不跟随应用内主题。
-          const html = buildExportHtml(doc, "light");
+          const html = await buildExportHtml(doc, "light");
           const exported = await api.exportRenderedDocument(
             format,
             html,

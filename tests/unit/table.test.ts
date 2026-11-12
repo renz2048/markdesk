@@ -141,14 +141,14 @@ describe("table DOM rendering", () => {
 });
 
 describe("table HTML export", () => {
-  it("keeps table structure and cell content in the exported document", () => {
+  it("keeps table structure and cell content in the exported document", async () => {
     const source = [
       "| 名称 | 数量 |",
       "| --- | ---: |",
       "| 苹果 | 3 |",
       "",
     ].join("\n");
-    const html = buildExportHtml(parseMarkdown(source), "light");
+    const html = await buildExportHtml(parseMarkdown(source), "light");
 
     expect(html).toContain("<table>");
     expect(html).toContain("<th>名称</th>");

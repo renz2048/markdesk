@@ -22,6 +22,7 @@ const rendererDeps: DependencyVersion[] = [
   { name: "CodeMirror", version: pkg.dependencies.codemirror },
   { name: "ProseMirror", version: pkg.dependencies["prosemirror-model"] },
   { name: "markdown-it", version: pkg.dependencies["markdown-it"] },
+  { name: "Mermaid", version: pkg.dependencies.mermaid },
   { name: "DOMPurify", version: pkg.dependencies.dompurify },
 ];
 
