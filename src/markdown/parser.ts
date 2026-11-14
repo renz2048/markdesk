@@ -13,6 +13,10 @@ interface MutableMarkdownToken {
   type: string;
   content: string;
   children?: MutableMarkdownToken[] | null;
+  tag?: string;
+  nesting?: number;
+  level?: number;
+  block?: boolean;
   attrSet(name: string, value: string): void;
 }
 
@@ -77,6 +81,62 @@ function unwrapTableSections(state: MarkdownCoreState) {
   });
 }
 
+// Typora 式数学公式块：整段恰为 “$$…$$”（至少 4 个字符，允许空公式
+// “$$$$”）。捕获组保留定界符之间的原文（含换行与空格），保证逐字往返。
+const mathBlockPattern = /^\$\$([\s\S]+)?\$\$$/u;
+// [toc] / [TOC] 整段一个词，大小写只认全小写与全大写两种（Typora 行为）。
+const tocBlockPattern = /^\[(?:toc|TOC)\]$/u;
+
+/**
+ * 把顶层（level 0）的 “$$…$$” 段落与 “[toc]” 段落改写为专用块 token。
+ * 改写发生在 block 解析后、inline 解析前：inline.content 此时就是原始
+ * 源文本，转义、反斜杠原样保留。引用块、列表内的同名文本保持普通
+ * 段落（两种块都只支持文档顶层，避免嵌套结构的模型校验问题）。
+ */
+function recognizeDisplayBlocks(state: MarkdownCoreState) {
+  const tokens = state.tokens;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const open = tokens[index];
+    if (open.type !== "paragraph_open") continue;
+    const inline = tokens[index + 1];
+    const close = tokens[index + 2];
+    if (
+      open.nesting !== 1 ||
+      !inline ||
+      inline.type !== "inline" ||
+      inline.nesting !== 0 ||
+      !close ||
+      close.type !== "paragraph_close"
+    ) {
+      continue;
+    }
+    // 顶层段落：三连 token 的 level 一致且为 0（嵌套段落由外层结构
+    // 包裹，blockquote/列表里的 paragraph_open level ≥ 1）。
+    if ((open.level ?? 0) !== 0) continue;
+
+    const content = inline.content;
+    const math = mathBlockPattern.exec(content);
+    if (math) {
+      open.type = "math_block";
+      open.tag = "";
+      open.nesting = 0;
+      open.block = true;
+      open.content = math[1] ?? "";
+      tokens.splice(index, 3, open);
+      continue;
+    }
+    if (tocBlockPattern.test(content)) {
+      open.type = "toc_block";
+      open.tag = "";
+      open.nesting = 0;
+      open.block = true;
+      // attrs.source 需要作者原文；token.content 原样带过去。
+      open.content = content;
+      tokens.splice(index, 3, open);
+    }
+  }
+}
+
 function rawBlockSourceFromToken(content: string): string {
   return content.endsWith("\n") ? content.slice(0, -1) : content;
 }
@@ -107,6 +167,8 @@ const markdownIt = MarkdownIt("zero", { html: true }).enable([
   ]);
 
 markdownIt.core.ruler.after("block", "markdesk_tables", unwrapTableSections);
+// 数学公式块 / [toc] 目录块的识别必须先于 inline 解析（依赖原始 content）。
+markdownIt.core.ruler.after("block", "markdesk_display_blocks", recognizeDisplayBlocks);
 
 const taskMarkdownIt = markdownIt.use(taskLists, {
   enabled: false,
@@ -172,6 +234,13 @@ export const markdownParser = new MarkdownParser(markdownSchema, taskMarkdownIt,
     },
   },
   code_block: { block: "code_block", noCloseToken: true },
+  math_block: { block: "math_block", noCloseToken: true },
+  toc_block: {
+    node: "toc_block",
+    getAttrs(token) {
+      return { source: token.content };
+    },
+  },
   hr: { node: "horizontal_rule" },
   table: { block: "table" },
   tr: { block: "table_row" },
@@ -247,5 +316,14 @@ function preserveFenceNewline(state: ParseStateLike, token: FenceTokenShape) {
   state.closeNode();
 }
 
+// 同 preserveFenceNewline 的理由：math_block 的文本内容必须与定界符
+// 之间的原文逐字一致（含首尾换行），通用处理器会剥掉末尾换行。
+function preserveMathContent(state: ParseStateLike, token: FenceTokenShape) {
+  state.openNode(markdownSchema.nodes.math_block, {});
+  state.addText(token.content);
+  state.closeNode();
+}
+
 patchableParser.tokenHandlers.fence = preserveFenceNewline;
 patchableParser.tokenHandlers.code_block = preserveFenceNewline;
+patchableParser.tokenHandlers.math_block = preserveMathContent;

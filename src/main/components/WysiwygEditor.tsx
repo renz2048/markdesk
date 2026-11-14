@@ -12,8 +12,10 @@ import { formattingKeymap } from "../editor/commands";
 import { selectedLinkHref } from "../editor/commands";
 import { markdownInputRules } from "../editor/inputRules";
 import { listEditingPlugin } from "../editor/listEditing";
+import { mathBlockPlugin } from "../editor/mathBlock";
 import { mermaidBlockPlugin } from "../editor/mermaidBlock";
 import { tableEditingPlugin } from "../editor/tableEditing";
+import { tocBlockPlugin } from "../editor/tocBlock";
 import { pendingSyntaxPlugin } from "../editor/pendingSyntax";
 import { SetEditorSelectionContext, SetEditorViewContext } from "./EditorContexts";
 import { LinkPopover, type LinkDraft } from "./LinkPopover";
@@ -131,6 +133,10 @@ export function createEditorPlugins(
     gapCursor(),
     // Mermaid 图表块：code_block(mermaid) 渲染成图，光标进入切源码。
     mermaidBlockPlugin(),
+    // 数学公式块：math_block 渲染成 MathJax SVG，光标进入切源码。
+    mathBlockPlugin(),
+    // [toc] 目录块：条目实时取自文档标题，点击跳转。
+    tocBlockPlugin(),
     ...(getPasteImageSource
       ? [createPasteImagePlugin(getPasteImageSource)]
       : []),

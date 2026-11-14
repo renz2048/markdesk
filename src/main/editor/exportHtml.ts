@@ -1,13 +1,16 @@
 import DOMPurify from "dompurify";
 import { DOMSerializer, Node } from "prosemirror-model";
 import { markdownSchema, sourceImageSrc } from "../../markdown/schema";
+import { isMathBlock } from "./mathBlock";
+import { renderMathSvg } from "./mathRender";
 import { isMermaidBlock } from "./mermaidBlock";
 import { renderMermaidDiagram } from "./mermaidRender";
+import { buildTocTree, type TocTreeNode } from "./tocBlock";
 
 const allowedTags = [
-  "article", "aside", "blockquote", "br", "code", "del", "em", "h1", "h2",
-  "h3", "h4", "h5", "h6", "hr", "img", "li", "ol", "p", "pre", "strong",
-  "table", "tbody", "td", "th", "thead", "tr", "ul", "a",
+  "article", "aside", "blockquote", "br", "code", "del", "div", "em", "h1",
+  "h2", "h3", "h4", "h5", "h6", "hr", "img", "li", "ol", "p", "pre",
+  "strong", "table", "tbody", "td", "th", "thead", "tr", "ul", "a", "nav",
 ];
 
 // style 仅用于表格单元格的 text-align 对齐；进入净化器的 HTML 全部由
@@ -15,6 +18,7 @@ const allowedTags = [
 // style 值，因此放行是安全的。
 const allowedAttributes = [
   "href", "title", "src", "alt", "class", "style", "data-language",
+  "data-markdesk-toc",
 ];
 
 /**
@@ -26,19 +30,20 @@ export function sanitizeHtml(html: string): string {
     ALLOWED_TAGS: allowedTags,
     ALLOWED_ATTR: allowedAttributes,
     ALLOW_DATA_ATTR: false,
-    // 自定义 URI 白名单下 DOMPurify 会对未知属性（data-language）的
-    // 值做 URL 校验；它是语言名不是链接，显式豁免。
-    ADD_URI_SAFE_ATTR: ["data-language"],
-    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|data:image\/|assets\/|\.\/|\.\.\/|[^:/?#](?:[?#]|$))/iu,
+    // 自定义 URI 白名单下 DOMPurify 会对未知属性（data-language /
+    // data-markdesk-toc）的值做 URL 校验；它们不是链接，显式豁免。
+    ADD_URI_SAFE_ATTR: ["data-language", "data-markdesk-toc"],
+    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|data:image\/|assets\/|\.\/|\.\.\/|#|[^:/?#](?:[?#]|$))/iu,
   });
 }
 
 /**
- * mermaid SVG 单独消毒：图表需要 svg/html 两套标签（htmlLabels 的
- * foreignObject 内是 HTML），策略上放行 svg+svgFilters+html profile
- * 与 <style>（mermaid 内联字体样式），脚本与事件处理器仍被剥除。
+ * mermaid / 数学公式的 SVG 单独消毒：图表需要 svg/html 两套标签
+ * （htmlLabels 的 foreignObject 内是 HTML；MathJax 输出嵌 SVG），
+ * 策略上放行 svg+svgFilters+html profile 与 <style>（内联字体样式），
+ * 脚本与事件处理器仍被剥除。
  */
-function sanitizeMermaidSvg(svg: string): string {
+function sanitizeExportSvg(svg: string): string {
   return DOMPurify.sanitize(svg, {
     USE_PROFILES: { html: true, svg: true, svgFilters: true },
     ADD_TAGS: ["style"],
@@ -55,8 +60,19 @@ async function renderMermaidExportSvg(source: string): Promise<string | null> {
   return result.kind === "svg" ? result.svg : null;
 }
 
+/**
+ * 渲染导出用的数学公式：失败返回 null，调用方回退为保留 TeX 源码。
+ */
+async function renderMathExportSvg(source: string): Promise<string | null> {
+  const result = await renderMathSvg(source);
+  return result.kind === "svg" ? result.svg : null;
+}
+
 /** 单测可注入的 mermaid 渲染器：源码 → SVG 字符串（null 表示失败）。 */
 export type MermaidSvgRenderer = (source: string) => Promise<string | null>;
+
+/** 单测可注入的数学公式渲染器：TeX 源码 → SVG 字符串。 */
+export type MathSvgRenderer = (source: string) => Promise<string | null>;
 
 /** 渲染并消毒单张图；空结果返回 null 以便回退源码展示。 */
 async function renderSanitizedSvg(
@@ -65,7 +81,7 @@ async function renderSanitizedSvg(
 ): Promise<string | null> {
   const raw = await renderSvg(source);
   if (!raw) return null;
-  const svg = sanitizeMermaidSvg(raw);
+  const svg = sanitizeExportSvg(raw);
   return svg.includes("<svg") ? svg : null;
 }
 
@@ -124,16 +140,119 @@ function replaceMermaidBlocks(body: string, svgBySource: Map<string, string>): s
   return host.innerHTML;
 }
 
+/** 收集文档里的公式源码并渲染成 SVG（math_map，与 mermaid 同构）。 */
+async function renderMathMap(
+  doc: Node,
+  renderSvg: MathSvgRenderer,
+): Promise<Map<string, string>> {
+  const sources = new Set<string>();
+  doc.descendants((node) => {
+    if (!isMathBlock(node)) return true;
+    const source = node.textContent ?? "";
+    if (source.trim()) sources.add(source);
+    return false;
+  });
+  const entries = await Promise.all(
+    Array.from(sources, async (source) => {
+      const svg = await renderSanitizedSvg(source, renderSvg);
+      return svg ? ([source, svg] as const) : null;
+    }),
+  );
+  return new Map(entries.filter((entry): entry is readonly [string, string] =>
+    Boolean(entry),
+  ));
+}
+
+/**
+ * 把已消毒正文里的公式源码块（pre[data-language="math"]）替换为渲染
+ * 好的 SVG；渲染失败保留 TeX 源码展示。
+ */
+function replaceMathBlocks(body: string, svgBySource: Map<string, string>): string {
+  if (svgBySource.size === 0) return body;
+  const host = document.createElement("div");
+  host.innerHTML = body;
+  for (const pre of Array.from(
+    host.querySelectorAll('pre[data-language="math" i]'),
+  )) {
+    const svg = svgBySource.get(pre.textContent ?? "");
+    if (!svg) continue;
+    const figure = document.createElement("div");
+    figure.className = "markdesk-math-export";
+    figure.innerHTML = svg;
+    pre.replaceWith(figure);
+  }
+  return host.innerHTML;
+}
+
+interface ExportTocEntry {
+  text: string;
+  level: number;
+  id: string;
+}
+
+function renderExportTocList(
+  nodes: readonly TocTreeNode<ExportTocEntry>[],
+): HTMLUListElement {
+  const ul = document.createElement("ul");
+  for (const { entry, children } of nodes) {
+    const li = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = `#${entry.id}`;
+    link.textContent = entry.text;
+    li.append(link);
+    if (children.length > 0) li.append(renderExportTocList(children));
+    ul.append(li);
+  }
+  return ul;
+}
+
+/**
+ * 把目录占位（div[data-markdesk-toc]）替换为真实的目录导航：给各级
+ * 标题分配锚点 id，再按标题层级生成嵌套列表。id 与 #fragment 链接都
+ * 在主消毒之后生成，值完全来自本地枚举。
+ */
+function replaceTocBlocks(body: string): string {
+  const host = document.createElement("div");
+  host.innerHTML = body;
+  const tocHosts = Array.from(host.querySelectorAll("div[data-markdesk-toc]"));
+  if (tocHosts.length === 0) return body;
+  const headings = Array.from(
+    host.querySelectorAll("h1, h2, h3, h4, h5, h6"),
+  );
+  const entries: ExportTocEntry[] = headings.map((heading, index) => {
+    const id = `md-toc-h-${index}`;
+    heading.id = id;
+    return {
+      text: heading.textContent ?? "",
+      level: Number(heading.tagName.slice(1)),
+      id,
+    };
+  });
+  const nav = document.createElement("nav");
+  nav.className = "markdesk-toc-export";
+  nav.setAttribute("aria-label", "目录");
+  nav.append(renderExportTocList(buildTocTree(entries)));
+  for (const tocHost of tocHosts) {
+    tocHost.replaceWith(nav.cloneNode(true));
+  }
+  return host.innerHTML;
+}
+
 /**
  * 将文档模型序列化为完整的独立 HTML 文件：正文经过净化，图片保留
- * 相对路径，mermaid 图表以内联 SVG 嵌入，样式内联避免外部依赖。
+ * 相对路径，mermaid 图表与数学公式以内联 SVG 嵌入，[toc] 目录展开为
+ * 锚点导航，样式内联避免外部依赖。
  */
 export async function buildExportHtml(
   doc: Node,
   theme: "light" | "dark",
   renderMermaid: MermaidSvgRenderer = renderMermaidExportSvg,
+  renderMath: MathSvgRenderer = renderMathExportSvg,
 ): Promise<string> {
-  const svgBySource = await renderMermaidMap(doc, renderMermaid);
+  const [mermaidBySource, mathBySource] = await Promise.all([
+    renderMermaidMap(doc, renderMermaid),
+    renderMathMap(doc, renderMath),
+  ]);
   const fragment = exportSerializer.serializeFragment(doc.content);
   const host = document.createElement("article");
   host.append(fragment);
@@ -142,7 +261,12 @@ export async function buildExportHtml(
     image.setAttribute("src", exportImageSrc(image.getAttribute("src") ?? ""));
   }
 
-  const body = replaceMermaidBlocks(sanitizeHtml(host.innerHTML), svgBySource);
+  const body = replaceTocBlocks(
+    replaceMathBlocks(
+      replaceMermaidBlocks(sanitizeHtml(host.innerHTML), mermaidBySource),
+      mathBySource,
+    ),
+  );
   return `<!doctype html>
 <html lang="zh-CN" data-theme="${theme}">
 <head><meta charset="utf-8"><title>MarkDesk exported document</title>
@@ -174,6 +298,11 @@ th:empty::after,td:empty::after{content:"\\200b"}
 thead,tr:nth-child(2n){background:#f8f8f8}
 .markdesk-mermaid-export{margin:.8em 0;text-align:center}
 .markdesk-mermaid-export svg{max-width:100%;height:auto}
+.markdesk-math-export{margin:.8em 0;text-align:center;overflow-x:auto}
+.markdesk-math-export svg{max-width:100%;height:auto}
+nav.markdesk-toc-export{margin:.8em 0;padding:.6em 1.2em;border:1px solid #dfe2e5;border-radius:4px;background:#f8f8f8;font-size:.95em}
+nav.markdesk-toc-export ul{margin:.2em 0;padding-left:1.4em;list-style:none}
+nav.markdesk-toc-export a{color:#4183C4;text-decoration:none}
 html[data-theme="dark"]{background:#363B40;color:#b8bfc6}
 html[data-theme="dark"] h1,html[data-theme="dark"] h2,html[data-theme="dark"] h3{color:#DEDEDE;border-bottom-color:transparent}
 html[data-theme="dark"] h6{color:#9DA2A6}
@@ -184,6 +313,7 @@ html[data-theme="dark"] pre{background:#333;border-color:transparent}
 html[data-theme="dark"] hr{background:#474d54}
 html[data-theme="dark"] th,html[data-theme="dark"] td{border-color:#474d54}
 html[data-theme="dark"] thead,html[data-theme="dark"] tr:nth-child(2n){background:transparent}
+html[data-theme="dark"] nav.markdesk-toc-export{border-color:#474d54;background:#333}
 </style>
 </head><body>${body}</body></html>`;
 }

@@ -800,6 +800,85 @@ body {
   border-top-right-radius: 0;
 }
 
+/* 数学公式块：与 mermaid 图表块同构（预览/源码编辑切换）。 */
+.markdesk-math {
+  margin: 15px 0;
+}
+
+.markdesk-math pre {
+  display: none;
+  margin: 0;
+}
+
+.markdesk-math-preview {
+  overflow-x: auto;
+  padding: 12px;
+  background: var(--code-background);
+  border-radius: 3px;
+  text-align: center;
+}
+
+.markdesk-math-preview svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdesk-math.has-error .markdesk-math-preview {
+  color: var(--danger);
+  font-family: var(--monospace);
+  font-size: 0.85em;
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.theme-light .markdesk-math-preview {
+  border: 1px solid var(--code-border);
+}
+
+.markdesk-math.is-editing pre,
+.markdesk-math.has-error pre {
+  display: block;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* [toc] 目录块：条目实时取自文档标题，点击跳转。 */
+.markdesk-toc {
+  margin: 15px 0;
+  padding: 10px 16px;
+  background: var(--code-background);
+  border-radius: 3px;
+}
+
+.theme-light .markdesk-toc {
+  border: 1px solid var(--code-border);
+}
+
+.markdesk-toc.is-selected {
+  outline: 2px solid var(--accent-color, #4183c4);
+}
+
+.markdesk-toc-title {
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.markdesk-toc-list ul {
+  margin: 0.2em 0;
+  padding-left: 1.4em;
+  list-style: none;
+}
+
+.markdesk-toc-list a {
+  color: var(--link-color);
+  cursor: pointer;
+}
+
+.markdesk-toc-empty {
+  color: var(--secondary-foreground, #777);
+  font-size: 0.9em;
+}
+
 .ProseMirror hr {
   height: 2px;
   padding: 0;

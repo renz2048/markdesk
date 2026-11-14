@@ -23,6 +23,7 @@ const rendererDeps: DependencyVersion[] = [
   { name: "ProseMirror", version: pkg.dependencies["prosemirror-model"] },
   { name: "markdown-it", version: pkg.dependencies["markdown-it"] },
   { name: "Mermaid", version: pkg.dependencies.mermaid },
+  { name: "MathJax", version: pkg.dependencies["mathjax-full"] },
   { name: "DOMPurify", version: pkg.dependencies.dompurify },
 ];
 

@@ -6,7 +6,7 @@ import { findWrapping } from "prosemirror-transform";
 import { Decoration, DecorationSet } from "prosemirror-view";
 
 /**
- * Typora 式块级语法缓冲：行首输入 “# ” “> ” “- ” “1. ” ``` --- 等
+ * Typora 式块级语法缓冲：行首输入 “# ” “> ” “- ” “1. ” ``` --- $$ [toc]
  * 不立即转换，而是以浅色标记 + 预览样式提示；输入标记后的字符时标记
  * 变浅色、标题文字变粗体，按回车才把整行转换为对应块级结构。
  *
@@ -15,12 +15,14 @@ import { Decoration, DecorationSet } from "prosemirror-view";
  */
 
 // 列表（- / 1.）走即时转换（见 inputRules），不参与缓冲确认。
-type PendingKind = "heading" | "quote" | "fence" | "hr";
+type PendingKind = "heading" | "quote" | "fence" | "hr" | "math" | "toc";
 
 export interface PendingSyntax {
   kind: PendingKind;
   // heading：标题级别。
   level: number;
+  // 标记的原文（如 "# "、"$$"、"[toc]"；toc 序列化时逐字保留）。
+  marker: string;
   // 所在段落的块级范围与标记（含尾随空格）范围。
   blockFrom: number;
   blockTo: number;
@@ -31,9 +33,10 @@ export interface PendingSyntax {
   hasPreview: boolean;
 }
 
-// 分支顺序：标题、引用、代码围栏、两种分隔线写法。
+// 分支顺序：标题、引用、代码围栏、两种分隔线写法、数学公式、目录。
 // “* ” 的列表即时规则先于本插件消费该输入，“***” 仍按分隔线匹配。
-const PENDING_BLOCK = /^(?:(#{1,6})\s|(>)\s|(```)|(---)|(\*\*\*))/;
+const PENDING_BLOCK =
+  /^(?:(#{1,6})\s|(>)\s|(```)|(---)|(\*\*\*)|(\$\$)|(\[(?:toc|TOC)\]))/;
 
 /**
  * 匹配光标所在段落的待确认块级语法。仅普通段落参与（标题、代码块
@@ -66,6 +69,10 @@ export function matchPendingSyntax(
     kind = "quote";
   } else if (match[3]) {
     kind = "fence";
+  } else if (match[6]) {
+    kind = "math";
+  } else if (match[7]) {
+    kind = "toc";
   } else {
     kind = "hr";
   }
@@ -76,6 +83,7 @@ export function matchPendingSyntax(
   return {
     kind,
     level,
+    marker: match[0],
     blockFrom,
     blockTo,
     markerFrom,
@@ -181,13 +189,44 @@ export const commitPendingSyntax: Command = (state, dispatch, view) => {
         schema.nodes.paragraph.create(),
       ]);
       break;
+    case "math": {
+      if (!parentAllows(schema.nodes.math_block)) return false;
+      // 标记后的剩余文本：空（Typora 的 $$ + 回车开空公式）、单独的
+      // 闭定界符 $$，或 “源码$$”；其余情况不吞回车，交回普通 Enter。
+      const infoEnd = tr.selection.from;
+      const rest = tr.doc.textBetween(contentStart, infoEnd, "\n", " ");
+      let inner = "";
+      if (rest !== "") {
+        const closing = /^([\s\S]*)\$\$$/.exec(rest);
+        if (!closing) return false;
+        inner = closing[1];
+      }
+      const block = inner
+        ? schema.nodes.math_block.create(null, schema.text(inner))
+        : schema.nodes.math_block.create();
+      tr.replaceWith(blockFrom, blockTo, block);
+      break;
+    }
+    case "toc": {
+      if (!parentAllows(schema.nodes.toc_block)) return false;
+      // 行内除 [toc]/[TOC] 外还有其他内容时不转换（保持普通段落）。
+      const infoEnd = tr.selection.from;
+      const rest = tr.doc.textBetween(contentStart, infoEnd, "\n", " ");
+      if (rest !== "") return false;
+      tr.replaceWith(blockFrom, blockTo, [
+        schema.nodes.toc_block.create({ source: pending.marker }),
+        schema.nodes.paragraph.create(),
+      ]);
+      break;
+    }
   }
 
-  // 光标移到行内容末尾；分隔线则进入其后方的空段落。
-  if (pending.kind === "hr") {
-    tr.setSelection(
-      TextSelection.near(tr.doc.resolve(tr.mapping.map(blockFrom + 1, -1)), 1),
-    );
+  // 光标移到行内容末尾；分隔线/目录则进入其后方的空段落。
+  // replaceWith 后紧跟的新空段落起点是确定的：块起点 + 原子块
+  // nodeSize(1) + 1（mapping 对被替换区间内的位置会给到块边界，取
+  // GapCursor 而非段内光标）。
+  if (pending.kind === "hr" || pending.kind === "toc") {
+    tr.setSelection(TextSelection.near(tr.doc.resolve(blockFrom + 2), 1));
   } else {
     const cursor = tr.mapping.map(pending.contentEnd, -1);
     tr.setSelection(TextSelection.near(tr.doc.resolve(cursor), -1));

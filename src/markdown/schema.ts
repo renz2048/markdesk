@@ -141,6 +141,34 @@ export const markdownSchema = new Schema({
         return ["hr"];
       },
     },
+    // Typora 式数学公式块：文本内容是 TeX 源码（不含 $$ 定界符），
+    // code:true 保留换行；渲染只是显示层能力（mathBlock/mathRender）。
+    // 导出管线借道 pre[data-language="math"]，与 mermaid 的替换机制共用。
+    math_block: {
+      content: "text*",
+      group: "block",
+      code: true,
+      toDOM(node) {
+        return [
+          "pre",
+          { "data-language": "math" },
+          ["code", node.textContent],
+        ];
+      },
+    },
+    // Typora 式 [toc] 目录块：attrs.source 保留作者原文（[toc]/[TOC]）
+    // 以逐字往返；条目内容由视图按文档标题实时计算，不落盘。
+    toc_block: {
+      group: "block",
+      atom: true,
+      attrs: { source: { default: "[toc]" } },
+      toDOM(node) {
+        return [
+          "div",
+          { "data-markdesk-toc": String(node.attrs.source ?? "") },
+        ];
+      },
+    },
     table: {
       content: "table_row+",
       group: "block",

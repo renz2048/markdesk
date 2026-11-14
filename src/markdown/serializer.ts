@@ -396,6 +396,17 @@ export const markdownSerializer = new MarkdownSerializer(
       state.write("---");
       state.closeBlock(node);
     },
+    // 定界符原文（$$）+ 节点文本（即解析时捕获的原文）→ 逐字往返。
+    math_block(state, node) {
+      state.write("$$");
+      state.text(node.textContent, false);
+      state.write("$$");
+      state.closeBlock(node);
+    },
+    toc_block(state, node) {
+      state.write(String(node.attrs.source ?? "[toc]"));
+      state.closeBlock(node);
+    },
     table(state, node) {
       state.write(renderTableMarkdown(node));
       state.closeBlock(node);
